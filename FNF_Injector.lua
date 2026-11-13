@@ -36,6 +36,21 @@
     longer you hold.
     Sprites are local files made by the scripts in tools/.
 
+    v7.2.5
+      * SETTINGS > RP TUG-OF-WAR: choose the CLOSEST and FURTHEST
+        you and your target can be. Your notes pull you in, theirs
+        push you back, and near either end each move gets smaller
+        (exponential decay), so you ease into the edge. Moves glide
+        instead of jumping, stop at walls, and sit out while you
+        fly. Your pull and their push are sliders now, and all of it
+        saves.
+
+    v7.2.4
+      * FLY tab: FLY WITH, a player search at the top. Who you pick
+        is who FACE TO FACE faces, who AIR COMBAT fights and who COPY
+        THEIR ARROWS copies. Nobody picked: your FNF opponent. It no
+        longer goes by who's nearest.
+
     v7.2.3
       * COPY tab: COPY now copies their ARROWS. When they hit an
         arrow you hit the same one, with your own pose for it, and
@@ -251,7 +266,7 @@ local sectionPrevKey     = "LeftBracket"   -- [ to go prev
 -- ============================================================
 local SpacingSystem          -- ★ forward-declared so F.setupCharacter can see it
 local SPACING                -- forward-declared: the save code above its definition needs it
-local INJECTOR_VERSION = "7.2.3"   -- up here so everything can read it
+local INJECTOR_VERSION = "7.2.5"   -- up here so everything can read it
 local animTracks   = {}
 local idleTrack    = nil
 local connections  = {}
@@ -469,6 +484,7 @@ local Fly = {
     home = nil, pos = nil, retOff = nil, held = {}, lastPose = 0, rot = nil, tilt = nil,
     partnerRoot = nil, partnerT = 0, facing = "", snapPending = false,
     tracks = nil, curAnim = nil, refreshUI = nil,
+    withPlr = nil, refreshWith = nil, paintCopy = nil,   -- FLY WITH: the player you picked
 }
 
 -- ============================================================
@@ -1067,6 +1083,12 @@ local rpMoveStep      = 1.5
 local rpMinDistance   = 3.5
 local rpRetreatStep   = 1.2
 local rpMaxDistance   = 25.0
+local Tug = {
+    zone    = 4,      -- studs from CLOSEST / FURTHEST where your moves start getting smaller
+    glide   = 0.25,   -- seconds a move takes to (nearly) finish
+    pending = 0,      -- live: studs still to glide (+ away from them, - toward them)
+    conn    = nil,
+}
 local targetAnimConn      = nil
 local targetCharAddedConn = nil
 
@@ -3422,6 +3444,8 @@ function Save.collect()
             momentumCap = fightState.momentumCap,
             proximityDist = proximityBlockDist, proximityOn = proximityBlockEnabled,
             rpMode = rpModeEnabled,
+            rpMove = rpMoveStep, rpBack = rpRetreatStep, rpMin = rpMinDistance, rpMax = rpMaxDistance,
+            rpZone = Tug.zone, rpGlide = Tug.glide,
         },
     }
 end
@@ -3731,6 +3755,12 @@ function Save.apply(d, silentUi)
         proximityBlockDist       = num(f.proximityDist, proximityBlockDist)
         proximityBlockEnabled    = pick(f.proximityOn, proximityBlockEnabled)
         if type(f.rpMode) == "boolean" then rpModeEnabled = f.rpMode end
+        rpMoveStep    = math.clamp(num(f.rpMove, rpMoveStep), 0.5, 5)
+        rpRetreatStep = math.clamp(num(f.rpBack, rpRetreatStep), 0.5, 5)
+        rpMinDistance = math.clamp(num(f.rpMin, rpMinDistance), 2, 20)
+        rpMaxDistance = math.clamp(num(f.rpMax, rpMaxDistance), 6, 60)
+        Tug.zone      = math.clamp(num(f.rpZone, Tug.zone), 0.5, 10)
+        Tug.glide     = math.clamp(num(f.rpGlide, Tug.glide), 0.05, 1)
     end)
 
     -- anyone with a save file from before the tour existed isn't new
@@ -4880,7 +4910,7 @@ end
 --  You hover at a spot (Fly.home). The move keys move that spot;
 --  Space and Ctrl take it up and down. Every pose moves you a few
 --  studs its way:
---    FACE TO FACE: you face your opponent (or the nearest player);
+--    FACE TO FACE: you face who you fly with (FLY WITH, else your FNF opponent);
 --                  LEFT and RIGHT step you to your own left and right
 --    SIDE TO SIDE: you turn to the screen, like an FNF stage; LEFT and
 --                  RIGHT go screen left and screen right
@@ -4891,27 +4921,20 @@ end
 Fly.UP = Vector3.new(0, 1, 0)
 Fly.ZERO = Vector3.new(0, 0, 0)
 
--- Who you face in FACE TO FACE: your opponent, else the nearest player close by.
+-- Who you fly with: the player picked in FLY WITH, else your FNF opponent.
+function Fly.who()
+    local p = Fly.withPlr
+    if p and p.Parent then return p end
+    if currentTarget and currentTarget.Parent then return currentTarget end
+    return nil
+end
+
+-- Who you face in FACE TO FACE.
 function Fly.partner()
-    local function rootOf(plr)
-        local c = plr and plr.Character
-        return c and c:FindFirstChild("HumanoidRootPart")
-    end
-    local r = rootOf(currentTarget)
-    if r then return r, currentTarget.DisplayName end
-    local mine = Fly.root
-    if not mine then return nil, nil end
-    local best, bestD, bestName = nil, 60, nil
-    for _, p in ipairs(Players:GetPlayers()) do
-        if p ~= LocalPlayer then
-            local pr = rootOf(p)
-            if pr then
-                local d = (pr.Position - mine.Position).Magnitude
-                if d < bestD then best, bestD, bestName = pr, d, p.DisplayName end
-            end
-        end
-    end
-    return best, bestName
+    local p = Fly.who()
+    local r = p and p.Character and p.Character:FindFirstChild("HumanoidRootPart")
+    if r then return r, p.DisplayName end
+    return nil, nil
 end
 
 -- Which way you face, and which way a RIGHT pose takes you (both flat).
@@ -5523,9 +5546,9 @@ function Air.sameNote(a, b)
 end
 
 function Air.startTeach()
-    local foe = currentTarget
+    local foe = Fly.who()
     if not foe then
-        F.notify("Pick your FNF opponent first", "warn")
+        F.notify("Pick who you fly with first (FLY WITH, top of the FLY tab)", "warn")
         return
     end
     if not Air.on then
@@ -5841,9 +5864,9 @@ end
 
 function Air.start()
     if Air.on then return end
-    local foe = currentTarget
+    local foe = Fly.who()
     if not foe or not foe.Parent then
-        F.notify("Pick your FNF opponent first", "warn")
+        F.notify("Pick who you fly with first (FLY WITH, top of the FLY tab)", "warn")
         return
     end
     if not Fly.enabled and not Fly.start() then return end
@@ -5885,8 +5908,8 @@ function Air.step(dt, now)
         Air.stop("your opponent left")
         return
     end
-    if currentTarget ~= Air.foe then
-        Air.stop("you picked a different opponent")
+    if Fly.who() ~= Air.foe then
+        Air.stop("you picked someone else to fly with")
         return
     end
     -- knockback: a push that fades
@@ -8991,22 +9014,96 @@ function F.stopWatchingTargetAnims()
     if targetCharAddedConn then targetCharAddedConn:Disconnect(); targetCharAddedConn = nil end
 end
 
-function F.triggerRetreat()
-    if not rpModeEnabled or not currentTarget then return end
-    if not character or not currentTarget.Character then return end
+-- ============================================================
+--  RP TUG-OF-WAR
+--  Your notes pull you toward your target, theirs push you back. You
+--  never get closer than CLOSEST (rpMinDistance) or further than
+--  FURTHEST (rpMaxDistance). Near either end each note moves you a
+--  smaller share of the room that's left, shrinking exponentially, so
+--  you ease up to the edge instead of hitting it. Each move glides out
+--  on an exponential decay too, instead of jumping. Flat moves only;
+--  it stops at walls and sits out while you fly.
+-- ============================================================
+function Tug.roots()
+    if not rpModeEnabled or not currentTarget or Fly.enabled then return nil, nil end
+    local me = character and character:FindFirstChild("HumanoidRootPart")
+    local tc = currentTarget.Character
+    local them = tc and tc:FindFirstChild("HumanoidRootPart")
+    if not me or not them then return nil, nil end
+    return me, them
+end
 
-    local myRoot = character:FindFirstChild("HumanoidRootPart")
-    local targetRoot = currentTarget.Character:FindFirstChild("HumanoidRootPart")
-    if not myRoot or not targetRoot then return end
+-- flat distance between you two, and the flat way from them to you
+function Tug.gap(me, them)
+    local d = me.Position - them.Position
+    local flat = Vector3.new(d.X, 0, d.Z)
+    local dist = flat.Magnitude
+    return dist, (dist > 1e-3) and (flat / dist) or Vector3.new(0, 0, 1)
+end
 
-    local awayVector = (myRoot.Position - targetRoot.Position)
-    local distance = awayVector.Magnitude
-    if distance <= 0.001 then return end
+function Tug.ends()
+    local lo = rpMinDistance
+    return lo, math.max(rpMaxDistance, lo + 1)
+end
 
-    if distance < rpMaxDistance then
-        local actualStep = math.min(rpRetreatStep, rpMaxDistance - distance)
-        myRoot.CFrame = myRoot.CFrame + (awayVector.Unit * actualStep)
+-- step > 0 moves you away from them, < 0 toward them
+function Tug.move(step)
+    local me, them = Tug.roots()
+    if not me or step == 0 then return end
+    local dist = Tug.gap(me, them)
+    local lo, hi = Tug.ends()
+    local at = dist + Tug.pending                   -- where the moves still gliding leave you
+    local room = (step > 0) and (hi - at) or (at - lo)
+    if room <= 0.01 then return end
+    -- a share of the room left: the whole step far from the end, less and
+    -- less the closer you get, so you never slam into it
+    local s = math.abs(step)
+    local amount = math.min(s, room * (1 - math.exp(-s / math.max(Tug.zone, 0.1))))
+    Tug.pending = Tug.pending + ((step > 0) and amount or -amount)
+    if not Tug.conn then
+        Tug.conn = F.own(RunService.Heartbeat:Connect(function(dt)
+            local ok, err = pcall(Tug.step, dt)
+            if not ok then
+                F.log("tug of war: " .. tostring(err))
+                Tug.pending = 0
+            end
+            if math.abs(Tug.pending) < 0.005 and Tug.conn then
+                Tug.conn:Disconnect()
+                Tug.conn, Tug.pending = nil, 0
+            end
+        end))
     end
+end
+
+-- every frame while a move is gliding: the same share of what's left
+function Tug.step(dt)
+    local me, them = Tug.roots()
+    if not me then
+        Tug.pending = 0
+        return
+    end
+    local k = 1 - math.exp(-math.clamp(dt, 0, 0.1) * 3 / math.max(Tug.glide, 0.03))
+    local mv = Tug.pending * k
+    Tug.pending = Tug.pending - mv
+    -- never past either end, whatever else moved you two in between
+    local dist, away = Tug.gap(me, them)
+    local lo, hi = Tug.ends()
+    mv = math.clamp(dist + mv, math.min(lo, dist), math.max(hi, dist)) - dist
+    if math.abs(mv) < 1e-4 then return end
+    -- a wall in the way: stop there
+    local params = RaycastParams.new()
+    params.FilterType = Enum.RaycastFilterType.Exclude
+    params.FilterDescendantsInstances = { character, currentTarget.Character }
+    pcall(function() params.RespectCanCollide = true end)
+    if Workspace:Raycast(me.Position, away * (mv + ((mv > 0) and 1.5 or -1.5)), params) then
+        Tug.pending = 0
+        return
+    end
+    me.CFrame = me.CFrame + away * mv
+end
+
+function F.triggerRetreat()
+    Tug.move(rpRetreatStep)
 end
 
 function F.startWatchingTargetAnims()
@@ -9031,7 +9128,8 @@ function F.startWatchingTargetAnims()
             end
             FNFCamera:RegisterHit("OPPONENT")
             F.fightOpponentHit()
-            if rpModeEnabled then F.triggerRetreat() end
+            -- only their poses push you, not their emotes or this script's hit animations
+            if rpModeEnabled and Copy.isPose(currentTarget, track, Copy.idOf(track) or "") then F.triggerRetreat() end
         end))
     end
 
@@ -9064,19 +9162,7 @@ function F.setTargetPlayer(partialName)
 end
 
 function F.triggerRPMovement()
-    if not rpModeEnabled or not currentTarget then return end
-    if not character or not currentTarget.Character then return end
-
-    local myRoot = character:FindFirstChild("HumanoidRootPart")
-    local targetRoot = currentTarget.Character:FindFirstChild("HumanoidRootPart")
-    if not myRoot or not targetRoot then return end
-
-    local direction = (targetRoot.Position - myRoot.Position)
-    local distance = direction.Magnitude
-    if distance > rpMinDistance then
-        local actualStep = math.min(rpMoveStep, distance - rpMinDistance)
-        myRoot.CFrame = myRoot.CFrame + (direction.Unit * actualStep)
-    end
+    Tug.move(-rpMoveStep)
 end
 
 -- ============================================================
@@ -15936,7 +16022,7 @@ function F.buildTab_Fly(pages)
                 elseif Fly.facing ~= "" then
                     how = "face to face with " .. Fly.facing
                 else
-                    how = "face to face: nobody close, facing where the camera looks"
+                    how = "face to face: nobody picked, facing where the camera looks"
                 end
                 local spd = (Fly.root and Fly.root.Parent) and Fly.root.AssemblyLinearVelocity.Magnitude or 0
                 status.Text = string.format("flying  |  %.0f studs/s  |  %s", spd, how)
@@ -15948,6 +16034,8 @@ function F.buildTab_Fly(pages)
         end
     end)
     y = y + 34
+
+    y = F.buildFlyWith(pg, y)
 
     -- ---- poses move you ----
     F.makeDivider(pg, y, C(255,80,180)); y = y + 6
@@ -15965,7 +16053,7 @@ function F.buildTab_Fly(pages)
     faceBtn.MouseButton1Click:Connect(function() Fly.layout = "FACE"; paintLayout() end)
     sideBtn.MouseButton1Click:Connect(function() Fly.layout = "SIDE"; paintLayout() end)
     y = y + 34
-    local lh = F.makeLabel(pg, "FACE TO FACE: you face your opponent (or the nearest player), and LEFT / RIGHT step you to your own left and right around them. SIDE TO SIDE: you turn to the screen like on an FNF stage, and LEFT / RIGHT go screen left and screen right. UP and DOWN go up and down in both.",
+    local lh = F.makeLabel(pg, "FACE TO FACE: you face who you picked in FLY WITH (or your FNF opponent), and LEFT / RIGHT step you to your own left and right around them. SIDE TO SIDE: you turn to the screen like on an FNF stage, and LEFT / RIGHT go screen left and screen right. UP and DOWN go up and down in both.",
         UDim2.new(0,8,0,y), UDim2.new(1,-16,0,52), C(130,130,150), Enum.TextXAlignment.Left, 9)
     lh.TextWrapped = true
     lh.TextYAlignment = Enum.TextYAlignment.Top
@@ -16005,10 +16093,16 @@ function F.buildTab_Fly(pages)
     cpBtn.MouseButton1Click:Connect(function()
         if Copy.on and Copy.mode == "ARROWS" then
             Copy.setOn(false)
-        else
-            Copy.setMode("ARROWS")
-            if not Copy.on then Copy.setOn(true) end
+            return
         end
+        local who = Fly.who()
+        if not who then
+            F.notify("Pick who you fly with first (FLY WITH, top of this tab)", "warn")
+            return
+        end
+        if Copy.target ~= who then Copy.setTarget(who) end
+        Copy.setMode("ARROWS")
+        if not Copy.on then Copy.setOn(true) end
     end)
     swBtn.MouseButton1Click:Connect(function()
         Copy.swapLR = not Copy.swapLR
@@ -16022,13 +16116,14 @@ function F.buildTab_Fly(pages)
         cpBtn.BackgroundColor3 = on and C(60,190,120) or C(35,35,55)
         swBtn.Text = Copy.swapLR and "SWAP L/R: ON" or "SWAP L/R: OFF"
         swBtn.BackgroundColor3 = Copy.swapLR and C(60,190,120) or C(35,35,55)
-        if Copy.target then
-            local list = Copy.knownList(Copy.target)
-            cpLbl.Text = (on and "copying " or "copies ") .. Copy.target.DisplayName
-                .. ": when they hit an arrow you pose and fly that way too. Calibrated: "
-                .. ((#list > 0) and table.concat(list, " ") or "none yet (poses matching your binds still copy)")
+        local tgt = on and Copy.target or Fly.who()
+        if tgt then
+            local list = Copy.knownList(tgt)
+            cpLbl.Text = (on and "copying " or "copies ") .. tgt.DisplayName
+                .. " — their arrows pose you and fly you. Calibrated: "
+                .. ((#list > 0) and table.concat(list, " ") or "none yet (CALIBRATE is in AIR COMBAT below)")
         else
-            cpLbl.Text = "COPY THEIR ARROWS: pick who to copy, and CALIBRATE them, in the COPY tab"
+            cpLbl.Text = "COPY THEIR ARROWS: pick who you fly with above first"
         end
     end
     Fly.paintCopy()
@@ -16070,6 +16165,113 @@ end
 -- ============================================================
 -- ── FLY TAB: AIR COMBAT ──
 -- ============================================================
+-- ============================================================
+-- ── FLY TAB: FLY WITH (player search) ──
+-- Who you fly with: FACE TO FACE faces them, AIR COMBAT fights them and
+-- COPY THEIR ARROWS copies them. Nobody picked: your FNF opponent.
+-- ============================================================
+function Fly.pickWith(p)
+    Fly.withPlr = p
+    Fly.partnerT = 0                       -- turn to them right away
+    if p then F.notify("Flying with " .. p.DisplayName, "info") end
+    -- copying their arrows follows who you fly with
+    local who = Fly.who()
+    if Copy.on and Copy.mode == "ARROWS" and who and Copy.target ~= who then Copy.setTarget(who) end
+    if Fly.refreshWith then pcall(Fly.refreshWith) end
+    if Fly.paintCopy then pcall(Fly.paintCopy) end
+    if Air.refreshUI then pcall(Air.refreshUI) end
+end
+
+function F.buildFlyWith(pg, y)
+    local C = Color3.fromRGB
+    F.makeDivider(pg, y, C(120,220,255)); y = y + 6
+    local title = F.makeLabel(pg, "FLY WITH", UDim2.new(0,8,0,y), UDim2.new(1,-16,0,20), C(120,220,255), Enum.TextXAlignment.Left, 12)
+    title.Font = Enum.Font.GothamBold
+    y = y + 24
+
+    local search = F.makeBox(pg, UDim2.new(0,8,0,y), UDim2.new(1,-118,0,28), "search players (name or display name)")
+    local clearBtn = F.makeBtn(pg, "CLEAR", UDim2.new(1,-104,0,y), UDim2.new(0,96,0,28), C(170,35,35), nil, 10)
+    y = y + 34
+
+    local list = Instance.new("ScrollingFrame")
+    list.Size = UDim2.new(1,-16,0,110); list.Position = UDim2.new(0,8,0,y)
+    list.BackgroundColor3 = C(18,18,26); list.BackgroundTransparency = 0.2
+    list.BorderSizePixel = 0; list.ScrollBarThickness = 3
+    list.CanvasSize = UDim2.new(0,0,0,0); list.AutomaticCanvasSize = Enum.AutomaticSize.Y
+    list.Parent = pg
+    F.uiCorner(list)
+    local lay = Instance.new("UIListLayout")
+    lay.Padding = UDim.new(0,3); lay.SortOrder = Enum.SortOrder.LayoutOrder; lay.Parent = list
+    local pad = Instance.new("UIPadding")
+    pad.PaddingTop = UDim.new(0,4); pad.PaddingLeft = UDim.new(0,4); pad.PaddingRight = UDim.new(0,4)
+    pad.Parent = list
+    y = y + 116
+
+    local whoLbl = F.makeLabel(pg, "", UDim2.new(0,8,0,y), UDim2.new(1,-16,0,28), C(160,160,180), Enum.TextXAlignment.Left, 9)
+    whoLbl.TextWrapped = true
+    whoLbl.TextYAlignment = Enum.TextYAlignment.Top
+    y = y + 32
+
+    local function paintWho()
+        local p = Fly.who()
+        if p and p == Fly.withPlr then
+            whoLbl.Text = "flying with " .. p.DisplayName .. " (@" .. p.Name .. "): you face them, AIR COMBAT fights them, COPY THEIR ARROWS copies them"
+            whoLbl.TextColor3 = C(120,220,255)
+        elseif p then
+            whoLbl.Text = "nobody picked: using your FNF opponent, " .. p.DisplayName
+            whoLbl.TextColor3 = C(160,160,180)
+        else
+            whoLbl.Text = "nobody picked: FACE TO FACE faces where the camera looks"
+            whoLbl.TextColor3 = C(130,130,150)
+        end
+    end
+
+    local function fill()
+        if not list.Parent then return end
+        for _, c in ipairs(list:GetChildren()) do
+            if c:IsA("GuiObject") then c:Destroy() end
+        end
+        local q = (search.Text or ""):lower()
+        local rows = {}
+        for _, p in ipairs(Players:GetPlayers()) do
+            if p ~= LocalPlayer and (q == "" or p.Name:lower():find(q, 1, true)
+                or p.DisplayName:lower():find(q, 1, true)) then
+                table.insert(rows, p)
+            end
+        end
+        table.sort(rows, function(a, b) return a.DisplayName:lower() < b.DisplayName:lower() end)
+        if #rows == 0 then
+            F.makeLabel(list, (q == "") and "Nobody else here" or "No player matches", UDim2.new(0,0,0,0),
+                UDim2.new(1,-8,0,22), C(130,130,150), Enum.TextXAlignment.Left, 9)
+        end
+        for i, p in ipairs(rows) do
+            local b = F.makeBtn(list, string.format("%s (@%s)", p.DisplayName, p.Name), UDim2.new(0,0,0,0),
+                UDim2.new(1,-8,0,24), (p == Fly.withPlr) and C(60,160,220) or C(30,28,44), nil, 9)
+            b.TextXAlignment = Enum.TextXAlignment.Left
+            b.LayoutOrder = i
+            b.MouseButton1Click:Connect(function() Fly.pickWith(p) end)
+        end
+        paintWho()
+    end
+    Fly.refreshWith = fill
+
+    search:GetPropertyChangedSignal("Text"):Connect(fill)
+    clearBtn.MouseButton1Click:Connect(function()
+        search.Text = ""
+        Fly.pickWith(nil)
+    end)
+    F.own(Players.PlayerAdded:Connect(function() task.defer(fill) end))
+    F.own(Players.PlayerRemoving:Connect(function(p)
+        if p == Fly.withPlr then
+            F.notify(p.DisplayName .. " left — nobody picked in FLY WITH now", "info")
+            Fly.pickWith(nil)
+        end
+        task.defer(fill)
+    end))
+    fill()
+    return y
+end
+
 function F.buildAirSection(pg, y)
     local C = Color3.fromRGB
     local ORANGE = C(255, 150, 60)
@@ -16085,7 +16287,7 @@ function F.buildAirSection(pg, y)
         y = y + h + 4
         return l
     end
-    note("Hand-to-hand in the air with your FNF opponent, for RP: nobody takes real damage, the health bars are only on your screen. Your notes are jabs, their notes hit you and knock you back. Hit the same arrow at the same moment and it's a CLASH: you teleport somewhere else mid-air (them too, if they run this script). Lose and you're KO'd mid-air, then you fall.", 64)
+    note("Hand-to-hand in the air with who you fly with (FLY WITH, else your FNF opponent), for RP: nobody takes real damage, the health bars are only on your screen. Your notes are jabs, their notes hit you and knock you back. Hit the same arrow at the same moment and it's a CLASH: you teleport somewhere else mid-air (them too, if they run this script). Lose and you're KO'd mid-air, then you fall.", 74)
 
     local fightBtn = F.makeBtn(pg, "", UDim2.new(0,8,0,y), UDim2.new(0,388,0,32), C(35,35,55), nil, 11)
     fightBtn.MouseButton1Click:Connect(function() Air.toggle() end)
@@ -16102,11 +16304,11 @@ function F.buildAirSection(pg, y)
                 st, Air.foe and Air.foe.DisplayName or "", Air.round,
                 math.floor(Air.hpMe * 100 + 0.5), math.floor(Air.hpThem * 100 + 0.5), Air.winsMe, Air.winsThem)
             status.TextColor3 = ORANGE
-        elseif currentTarget then
-            status.Text = "ready — your opponent is " .. currentTarget.DisplayName .. ". START FIGHT takes off too if you're not flying."
+        elseif Fly.who() then
+            status.Text = "ready — you'd fight " .. Fly.who().DisplayName .. ". START FIGHT takes off too if you're not flying."
             status.TextColor3 = C(130,130,150)
         else
-            status.Text = "pick your FNF opponent first, then START FIGHT"
+            status.Text = "pick who you fly with (FLY WITH, top of this tab), then START FIGHT"
             status.TextColor3 = C(130,130,150)
         end
     end
@@ -16222,8 +16424,8 @@ function F.buildAirSection(pg, y)
         fightBtn.Text = Air.on and "STOP FIGHT" or "START FIGHT"
         fightBtn.BackgroundColor3 = Air.on and C(200,90,40) or C(35,35,55)
         local cal = Copy.calib
-        local list = Copy.knownList(currentTarget)
-        if cal and cal.plr == currentTarget then
+        local list = Copy.knownList(Fly.who())
+        if cal and cal.plr == Fly.who() then
             teachLbl.Text = "waiting for their " .. tostring(cal.left[1]) .. "…"
             teachLbl.TextColor3 = C(255,220,80)
         elseif #list > 0 then
@@ -17841,6 +18043,69 @@ function F.buildTab_Copy(pages)
     end)
 end
 
+-- ============================================================
+-- ── SETTINGS: RP TUG-OF-WAR sliders ──
+-- ============================================================
+function F.buildTugUI(pg, y)
+    local C = Color3.fromRGB
+    local help = F.makeLabel(pg, "You never get closer than CLOSEST or further than FURTHEST. Near either end each note moves you less and less (exponential), so you ease into the edge. Moves glide, stop at walls, and sit out while you fly.",
+        UDim2.new(0,8,0,y), UDim2.new(1,-16,0,30), C(130,130,150), Enum.TextXAlignment.Left, 9)
+    help.TextWrapped = true
+    help.TextYAlignment = Enum.TextYAlignment.Top
+    y = y + 34
+
+    local col = 0
+    local function slider(label, minV, maxV, fmt, get, set)
+        local x = (col == 0) and 8 or 206
+        F.makeLabel(pg, label, UDim2.new(0,x,0,y), UDim2.new(0,138,0,16), C(160,160,160), Enum.TextXAlignment.Left, 9)
+        local v = F.makeLabel(pg, string.format(fmt, get()), UDim2.new(0,x+138,0,y), UDim2.new(0,52,0,16),
+            C(255,80,180), Enum.TextXAlignment.Right, 9)
+        F.regText(v)
+        F.makeSlider(pg, UDim2.new(0,x,0,y+18), UDim2.new(0,190,0,12), minV, maxV, get(), function(val)
+            set(val)
+            v.Text = string.format(fmt, get())
+        end)
+        if col == 1 then y = y + 40 end
+        col = 1 - col
+    end
+    slider("CLOSEST (studs)", 2, 20, "%.1f",
+        function() return rpMinDistance end, function(val) rpMinDistance = val end)
+    slider("FURTHEST (studs)", 6, 60, "%.0f",
+        function() return rpMaxDistance end, function(val) rpMaxDistance = val end)
+    slider("YOUR NOTE PULLS YOU", 0.5, 5, "%.1f",
+        function() return rpMoveStep end, function(val) rpMoveStep = val end)
+    slider("THEIR NOTE PUSHES YOU", 0.5, 5, "%.1f",
+        function() return rpRetreatStep end, function(val) rpRetreatStep = val end)
+    slider("SLOW DOWN NEAR THE ENDS", 0.5, 10, "%.1f",
+        function() return Tug.zone end, function(val) Tug.zone = val end)
+    slider("GLIDE TIME (s)", 0.05, 1, "%.2f",
+        function() return Tug.glide end, function(val) Tug.glide = val end)
+
+    local status = F.makeLabel(pg, "", UDim2.new(0,8,0,y), UDim2.new(1,-16,0,16), C(160,160,180), Enum.TextXAlignment.Left, 9)
+    task.spawn(function()
+        while F.alive do
+            task.wait(0.25)
+            if not status.Parent then break end
+            if not rpModeEnabled then
+                status.Text = "RP MODE is off"
+            elseif not currentTarget then
+                status.Text = "no target — type their name in the box above"
+            elseif Fly.enabled then
+                status.Text = "sitting out while you fly"
+            else
+                local me, them = Tug.roots()
+                if me then
+                    local lo, hi = Tug.ends()
+                    status.Text = string.format("%s is %.1f studs away  ·  closest %.1f  ·  furthest %.0f",
+                        currentTarget.DisplayName, (Tug.gap(me, them)), lo, hi)
+                else
+                    status.Text = "waiting for your characters"
+                end
+            end
+        end
+    end)
+end
+
 function F.buildTab_Settings(pages)
     local pg6 = pages["⚙ SETTINGS"]
 
@@ -17904,9 +18169,9 @@ function F.buildTab_Settings(pages)
     end
 
     F.makeDivider(pg6, 400, Color3.fromRGB(0,200,255))
-    local rpTitle = F.makeLabel(pg6, "⚔ RP TUG-OF-WAR (PROXIMITY)", UDim2.new(0,8,0,406), UDim2.new(1,-16,0,20), Color3.fromRGB(255,80,180), Enum.TextXAlignment.Left, 12)
+    local rpTitle = F.makeLabel(pg6, "⚔ RP TUG-OF-WAR", UDim2.new(0,8,0,406), UDim2.new(1,-16,0,20), Color3.fromRGB(255,80,180), Enum.TextXAlignment.Left, 12)
     F.regText(rpTitle)
-    F.makeLabel(pg6, "Moves you toward the target on every note press.", UDim2.new(0,8,0,428), UDim2.new(1,-16,0,18), Color3.fromRGB(130,130,150), Enum.TextXAlignment.Left, 10)
+    F.makeLabel(pg6, "Your notes pull you toward your target, theirs push you back.", UDim2.new(0,8,0,428), UDim2.new(1,-16,0,18), Color3.fromRGB(130,130,150), Enum.TextXAlignment.Left, 10)
 
     local rpBtn = F.makeBtn(pg6, rpModeEnabled and "⚔  RP MODE ON" or "📴  RP MODE OFF",
         UDim2.new(0,8,0,450), UDim2.new(0,160,0,32),
@@ -17927,21 +18192,14 @@ function F.buildTab_Settings(pages)
         F.setTargetPlayer(targetBox.Text)
     end)
 
-    F.makeLabel(pg6, "SPEED", UDim2.new(0,8,0,490), UDim2.new(0,40,0,22), Color3.fromRGB(160,160,160), Enum.TextXAlignment.Left, 10)
-    local rpValLbl = F.makeLabel(pg6, string.format("%.1f studs", rpMoveStep), UDim2.new(0,300,0,490), UDim2.new(0,94,0,22), Color3.fromRGB(255,80,180), Enum.TextXAlignment.Right, 11)
-    F.regText(rpValLbl)
+    F.buildTugUI(pg6, 490)
 
-    F.makeSlider(pg6, UDim2.new(0,50,0,494), UDim2.new(0,250,0,14), 0.5, 5, rpMoveStep, function(v)
-        rpMoveStep = v
-        rpValLbl.Text = string.format("%.1f studs", v)
-    end)
-
-    -- spacing owns 530 through ~1140
-    F.buildSpacingUI(pg6, 530)
+    -- spacing owns 680 through ~1290
+    F.buildSpacingUI(pg6, 680)
     -- ============================================================
     -- ── SAVE / LOAD ──
     -- ============================================================
-    local svY = 1180
+    local svY = 1330
     F.makeDivider(pg6, svY, Color3.fromRGB(120,220,160))
     local svTitle = F.makeLabel(pg6, "SAVE / LOAD", UDim2.new(0,8,0,svY+6),
         UDim2.new(1,-16,0,20), Color3.fromRGB(120,220,160), Enum.TextXAlignment.Left, 12)
