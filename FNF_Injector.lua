@@ -36,6 +36,16 @@
     longer you hold.
     Sprites are local files made by the scripts in tools/.
 
+    v7.2.3
+      * COPY tab: COPY now copies their ARROWS. When they hit an
+        arrow you hit the same one, with your own pose for it, and
+        while you're flying you fly that way too (there's a switch
+        for it in the FLY tab). CALIBRATE learns which of their poses
+        is which arrow: they hit LEFT, DOWN, UP, RIGHT once each.
+        AIR COMBAT uses the same calibration. SWAP L/R for face to
+        face. The old way, their exact animations, is COPY: EXACT
+        ANIMS.
+
     v7.2.2
       * FLY tab > AIR COMBAT: hand-to-hand in the air with your FNF
         opponent, for RP. The health bars are only on your screen;
@@ -241,7 +251,7 @@ local sectionPrevKey     = "LeftBracket"   -- [ to go prev
 -- ============================================================
 local SpacingSystem          -- ★ forward-declared so F.setupCharacter can see it
 local SPACING                -- forward-declared: the save code above its definition needs it
-local INJECTOR_VERSION = "7.2.2"   -- up here so everything can read it
+local INJECTOR_VERSION = "7.2.3"   -- up here so everything can read it
 local animTracks   = {}
 local idleTrack    = nil
 local connections  = {}
@@ -487,7 +497,7 @@ local Air = {
     round = 1, winsMe = 0, winsThem = 0, hpMe = 1, hpThem = 1,
     off = Vector3.new(0, 0, 0), kbVel = Vector3.new(0, 0, 0), tilt = 0, tiltKick = 0,
     dash = nil, drop = nil, ko = false, falling = false,
-    mine = {}, theirs = {}, taught = {}, taughtFor = nil, teach = nil, teachUsed = {},
+    mine = {}, theirs = {},
     lagT = 0, lagV = 0.15, hitN = 0, bannerN = 0,
     tracks = {}, tracksFor = nil, hud = nil, refreshUI = nil,
 }
@@ -899,7 +909,14 @@ local Copy = {
     walkToo = false,    -- also copy their walk, run, idle, jump and fall
     sync    = true,     -- keep your copy on the same frame as theirs
     speed   = 1,        -- your copy's speed against theirs
-    into    = "BINDS",  -- where the arrow buttons put an animation: BINDS or CUTTER
+    into    = "BINDS",  -- where the arrow buttons put an animation: BINDS, CUTTER or THEIRS (which arrow it is for them)
+    mode    = "ARROWS", -- ARROWS: when they hit an arrow, you hit the same one. EXACT: you play their exact animations
+    swapLR  = false,    -- ARROWS: their LEFT is your RIGHT and the other way round
+    learned = {},       -- calibrations: [tostring(UserId)] = { [animation id] = "LEFT", ... }
+    calib   = nil,      -- calibrating: { plr = player, left = { arrows still to come }, used = {} }
+    down    = {},       -- ARROWS: [arrow] = which copied press is holding it down
+    downN   = 0,
+    unknown = 0,        -- ARROWS: their poses since COPY went on that it couldn't place
     -- live
     fill = nil, fillUsed = {},  -- directions waiting for their next poses
     seen = {},                  -- their animations, newest first: { id, name, length, count, bad }
@@ -3338,7 +3355,8 @@ function Save.collect()
                 hitAnim = Air.hitAnim, koAnim = Air.koAnim, winAnim = Air.winAnim },
 
         idle = { id = Idle.id, auto = Idle.auto },
-        copy = { walkToo = Copy.walkToo, sync = Copy.sync, speed = Copy.speed, into = Copy.into },
+        copy = { walkToo = Copy.walkToo, sync = Copy.sync, speed = Copy.speed, into = Copy.into,
+                 mode = Copy.mode, swapLR = Copy.swapLR, learned = Copy.learned },
 
         menu = { auto = Menu.auto, scale = Menu.scale },
 
@@ -3584,8 +3602,22 @@ function Save.apply(d, silentUi)
     end)
     sec("copy",    function()
         copyInto(Copy, d.copy, { on = true, target = true, seen = true, names = true, links = true,
-                                 tracks = true, fillUsed = true })
-        if Copy.into ~= "BINDS" and Copy.into ~= "CUTTER" then Copy.into = "BINDS" end
+                                 tracks = true, fillUsed = true, calib = true, down = true })
+        if Copy.into ~= "BINDS" and Copy.into ~= "CUTTER" and Copy.into ~= "THEIRS" then Copy.into = "BINDS" end
+        if Copy.mode ~= "ARROWS" and Copy.mode ~= "EXACT" then Copy.mode = "ARROWS" end
+        local learned = {}
+        for uid, map in pairs(Copy.learned) do
+            if type(uid) == "string" and type(map) == "table" then
+                local clean = {}
+                for id, dir in pairs(map) do
+                    if type(id) == "string" and (dir == "LEFT" or dir == "DOWN" or dir == "UP" or dir == "RIGHT") then
+                        clean[id] = dir
+                    end
+                end
+                learned[uid] = clean
+            end
+        end
+        Copy.learned = learned
         Copy.speed = math.clamp(Copy.speed, 0.25, 2)
     end)
     sec("hold",    function() copyInto(Hold, d.hold) end)
@@ -5479,37 +5511,9 @@ function Air.bindFoe()
     Air.foeCharConn = F.own(foe.CharacterAdded:Connect(bind))
 end
 
--- Not a note: their walk/fall/emotes (from their Animate script), and this
--- script's own hit, KO and win animations if they run it too (those play
--- above poses, at Action4). Otherwise your jab would make them "hit" you back.
-function Air.notANote(track, id)
-    if Copy.isMove(track) then return true end
-    local ok, top = pcall(function() return track.Priority == Enum.AnimationPriority.Action4 end)
-    if ok and top then return true end
-    local animate = Air.foe and Air.foe.Character and Air.foe.Character:FindFirstChild("Animate")
-    if animate then
-        for _, a in ipairs(animate:GetDescendants()) do
-            if a:IsA("Animation") and (a.AnimationId:match("%d+") or "") == id then return true end
-        end
-    end
-    return false
-end
-
--- which arrow that pose is: taught, else one of yours (same binds), else unknown
+-- which arrow that pose of theirs is (Copy.dirOf: calibrated, else your binds)
 function Air.theirDir(id)
-    if Air.taughtFor == Air.foe and Air.taught[id] then return Air.taught[id] end
-    for _, dir in ipairs(Air.DIRS) do
-        local row = F.rowForDir(dir)
-        if row then
-            if row.id == id then return dir end
-            for _, a in ipairs(row.alts or {}) do
-                if a.id == id then return dir end
-            end
-        end
-        local s = cutterSlices[dir]
-        if s and s.id == id then return dir end
-    end
-    return nil
+    return Copy.dirOf(Air.foe, id)
 end
 
 -- an arrow it can't tell clashes on timing alone
@@ -5524,34 +5528,17 @@ function Air.startTeach()
         F.notify("Pick your FNF opponent first", "warn")
         return
     end
-    if Air.taughtFor ~= foe then Air.taught, Air.taughtFor = {}, foe end
-    Air.teach, Air.teachUsed = { "LEFT", "DOWN", "UP", "RIGHT" }, {}
     if not Air.on then
         Air.foe = foe
-        Air.bindFoe()
+        Air.bindFoe()        -- something has to watch their poses while they calibrate
     end
-    F.notify("Ask " .. foe.DisplayName .. " to hit LEFT, DOWN, UP, RIGHT once each, in that order", "info")
-    if Air.refreshUI then Air.refreshUI() end
+    Copy.calibrate(foe)
 end
 
 function Air.onTheirPose(track)
     local id = Copy.idOf(track)
-    if not id or Air.notANote(track, id) then return end
-
-    -- TEACH: their next different poses are LEFT, DOWN, UP, RIGHT in turn
-    if Air.teach and Air.taughtFor == Air.foe then
-        if not Air.teachUsed[id] then
-            Air.teachUsed[id] = true
-            Air.taught[id] = table.remove(Air.teach, 1)
-            if #Air.teach == 0 then
-                Air.teach = nil
-                F.notify("Learned all four of " .. Air.foe.DisplayName .. "'s arrows", "success")
-                if not Air.on then Air.unbindFoe() end
-            end
-            if Air.refreshUI then Air.refreshUI() end
-        end
-        return     -- teaching poses don't hit you
-    end
+    if not id or not Copy.isPose(Air.foe, track, id) then return end
+    if Copy.calibStep(Air.foe, track, id) then return end     -- calibrating poses don't hit you
 
     if not Air.on or Air.state ~= "FIGHT" then return end
     local now = os.clock()
@@ -5860,7 +5847,6 @@ function Air.start()
         return
     end
     if not Fly.enabled and not Fly.start() then return end
-    if Air.taughtFor ~= foe then Air.taught, Air.taughtFor, Air.teach = {}, foe, nil end
     Air.foe = foe
     Air.gen = Air.gen + 1
     Air.on = true
@@ -5879,7 +5865,6 @@ function Air.stop(reason, keepHud)
     Air.gen = Air.gen + 1
     Air.state = "OFF"
     Air.unbindFoe()
-    Air.teach = nil
     Air.off, Air.kbVel, Air.dash, Air.drop = Air.ZERO, Air.ZERO, nil, nil
     Air.tilt, Air.tiltKick, Air.ko = 0, 0, false
     Air.mine, Air.theirs = {}, {}
@@ -7250,9 +7235,13 @@ end
 --  One path for every input: keyboard, touch arrows, anything
 --  later. So every feature behaves the same however you play.
 -- ============================================================
-function F.notePress(row)
+-- copied: COPY ARROWS pressed it for you because they hit that arrow. It
+-- poses you and moves you like your own press, but it isn't your note: no
+-- heal request, no hit on your opponent, no AIR COMBAT jab, and it doesn't
+-- count toward your notes, health or BPM.
+function F.notePress(row, copied)
     Chars.sing(row.dir)
-    local jabId = Air.jabFor(row.dir)     -- AIR COMBAT: this arrow's jab, if you set one
+    local jabId = (not copied) and Air.jabFor(row.dir) or nil     -- AIR COMBAT: this arrow's jab, if you set one
     if not jabId and cutterEnabled and (F.cutterSliceId(row.dir) or "") ~= "" then
         F.cutterPlaySlice(row.dir)
     else
@@ -7272,28 +7261,37 @@ function F.notePress(row)
 
     F.hitArrow(row.dir)
     FNFCamera:RegisterHit("PLAYER")
-    -- Ask the game server to heal; the server must validate and rate-limit this.
-    local poseHealRemote = ReplicatedStorage:FindFirstChild("PoseHealRequest")
-    if poseHealRemote and poseHealRemote:IsA("RemoteEvent") then
-        poseHealRemote:FireServer()
+    if not copied then
+        -- Ask the game server to heal; the server must validate and rate-limit this.
+        local poseHealRemote = ReplicatedStorage:FindFirstChild("PoseHealRequest")
+        if poseHealRemote and poseHealRemote:IsA("RemoteEvent") then
+            poseHealRemote:FireServer()
+        end
     end
     FNFCamera:RegisterDirectionalHit(row.dir)
-    F.fightPlayerHit(row.dir)
-    Ghost.tryPerfect(row.dir)
+    if not copied then
+        F.fightPlayerHit(row.dir)
+        Ghost.tryPerfect(row.dir)
+    end
     F.swapFace(row.dir)
     if Fly.enabled then
-        if Air.on then Air.onPress(row.dir) else Fly.onPose(row.dir) end
+        if not Air.on then
+            Fly.onPose(row.dir)            -- copied too: you fly that way like them
+        elseif not copied then
+            Air.onPress(row.dir)
+        end
     else
         F.triggerRPMovement()
         if spacing then spacing:OnSingStart(character) end
     end
+    if copied then return end
     Notes.press(row.dir)
     Health.holdBegin(row.dir)
     F.registerBpmTap()
     if F.refreshBpmDetectorUI then F.refreshBpmDetectorUI() end
 end
 
-function F.noteRelease(row)
+function F.noteRelease(row, copied)
     Chars.release(row.dir)
     if cutterEnabled then
         F.cutterStopSlice()
@@ -7303,8 +7301,10 @@ function F.noteRelease(row)
     F.releaseArrow(row.dir)
     F.restoreFace()
     if spacing then spacing:OnSingStop(character) end
-    Notes.release(row.dir)
-    Health.holdEnd(row.dir)
+    if not copied then
+        Notes.release(row.dir)
+        Health.holdEnd(row.dir)
+    end
     Fly.onRelease(row.dir)
     Arms.onRelease(row.dir)   -- after the pose decides whether it's being held
 end
@@ -9139,6 +9139,7 @@ function Copy.redraw()
     task.delay(0.1, function()
         Copy.redrawQueued = false
         if Copy.refresh then pcall(Copy.refresh) end
+        if Fly.paintCopy then pcall(Fly.paintCopy) end
     end)
 end
 
@@ -9170,7 +9171,7 @@ end
 
 -- their track starts: start yours
 function Copy.mirror(theirs)
-    if not Copy.on or Copy.links[theirs] then return end
+    if not Copy.on or Copy.mode ~= "EXACT" or Copy.links[theirs] then return end
     local move = Copy.isMove(theirs)
     if move and not Copy.walkToo then return end
     local id = Copy.idOf(theirs)
@@ -9248,6 +9249,10 @@ end
 
 -- Puts one of their animations into one of your directions.
 function Copy.assign(id, dir)
+    if Copy.into == "THEIRS" then
+        Copy.learn(Copy.target, id, dir)
+        return
+    end
     if Copy.into == "CUTTER" then
         local s = cutterSlices[dir]
         if not s then return end
@@ -9325,7 +9330,8 @@ function Copy.onPlayed(track)
     local id = Copy.idOf(track)
     if not id then return end
     if not Copy.isMove(track) then Copy.log(id, track) end
-    Copy.mirror(track)
+    if Copy.calibStep(Copy.target, track, id) then return end
+    if Copy.mode == "ARROWS" then Copy.arrow(track, id) else Copy.mirror(track) end
 end
 
 function Copy.bindChar(plr, char)
@@ -9351,6 +9357,7 @@ function Copy.unbind()
         end
     end
     Copy.dropLinks()
+    Copy.releaseAll()
     Copy.animr = nil
 end
 
@@ -9383,13 +9390,195 @@ function Copy.setOn(on)
         on = false
     end
     Copy.on = on
+    Copy.releaseAll()
+    Copy.unknown = 0
     if on then
         Copy.ensureSync()
         Copy.remirror()
-        F.notify("Copying " .. Copy.target.DisplayName, "success")
+        if Copy.mode == "ARROWS" then
+            F.notify("Copying " .. Copy.target.DisplayName .. "'s arrows"
+                .. ((#Copy.knownList(Copy.target) < 4) and " — CALIBRATE them if some arrows don't copy" or ""), "success")
+        else
+            F.notify("Copying " .. Copy.target.DisplayName, "success")
+        end
     else
         Copy.dropLinks()
     end
+    Copy.redraw()
+end
+
+-- ============================================================
+--  COPY ARROWS
+--  When they hit an arrow, you hit the same one: your own pose for it,
+--  your arms and face, and your FLY move that way while you're flying.
+--  The script has to know which of their poses is which arrow. Poses
+--  that match your own binds it knows already; the rest you CALIBRATE
+--  (they hit LEFT, DOWN, UP, RIGHT once each). AIR COMBAT uses the same
+--  calibration to tell which arrow they hit.
+-- ============================================================
+
+-- A pose they hit, not their walk, fall or emotes (their Animate script's)
+-- or this script's own hit / KO / win animations (those play at Action4).
+function Copy.isPose(plr, track, id)
+    if Copy.isMove(track) then return false end
+    local ok, top = pcall(function() return track.Priority == Enum.AnimationPriority.Action4 end)
+    if ok and top then return false end
+    local animate = plr and plr.Character and plr.Character:FindFirstChild("Animate")
+    if animate then
+        for _, a in ipairs(animate:GetDescendants()) do
+            if a:IsA("Animation") and (a.AnimationId:match("%d+") or "") == id then return false end
+        end
+    end
+    return true
+end
+
+-- their calibration: { [animation id] = "LEFT", ... }
+function Copy.learnedFor(plr, make)
+    if not plr then return nil end
+    local k = tostring(plr.UserId)
+    if make and type(Copy.learned[k]) ~= "table" then Copy.learned[k] = {} end
+    return Copy.learned[k]
+end
+
+-- which arrow that pose of theirs is: calibrated, else one of your own binds
+function Copy.dirOf(plr, id)
+    local map = Copy.learnedFor(plr)
+    if map and map[id] then return map[id] end
+    for _, dir in ipairs(ARROW_ORDER) do
+        local row = F.rowForDir(dir)
+        if row then
+            if row.id == id then return dir end
+            for _, a in ipairs(row.alts or {}) do
+                if a.id == id then return dir end
+            end
+        end
+        local s = cutterSlices[dir]
+        if s and s.id == id then return dir end
+    end
+    return nil
+end
+
+-- the arrows calibrated for them, in order
+function Copy.knownList(plr)
+    local have, list = {}, {}
+    for _, d in pairs(Copy.learnedFor(plr) or {}) do have[d] = true end
+    for _, d in ipairs(ARROW_ORDER) do
+        if have[d] then table.insert(list, d) end
+    end
+    return list
+end
+
+function Copy.learn(plr, id, dir)
+    local map = Copy.learnedFor(plr, true)
+    if not map then
+        F.notify("Pick a player first", "warn")
+        return
+    end
+    map[id] = dir
+    F.notify("Their " .. id .. " is now their " .. dir, "success")
+    Copy.redraw()
+    if Air.refreshUI then Air.refreshUI() end
+end
+
+function Copy.calibrate(plr)
+    if not plr then
+        F.notify("Pick a player first", "warn")
+        return
+    end
+    if Copy.calib and Copy.calib.plr == plr then        -- pressed again: stop
+        Copy.calib = nil
+        F.notify("Stopped calibrating", "info")
+    else
+        Copy.learned[tostring(plr.UserId)] = {}           -- a fresh start
+        Copy.calib = { plr = plr, left = { "LEFT", "DOWN", "UP", "RIGHT" }, used = {} }
+        F.notify("Have " .. plr.DisplayName .. " hit LEFT, DOWN, UP, RIGHT once each, in that order", "info")
+    end
+    Copy.redraw()
+    if Air.refreshUI then Air.refreshUI() end
+end
+
+-- While calibrating them, their next different poses are LEFT, DOWN, UP,
+-- RIGHT in turn. True when it took this pose (so it isn't copied, and in
+-- AIR COMBAT doesn't hit you).
+function Copy.calibStep(plr, track, id)
+    local c = Copy.calib
+    if not c or not plr or c.plr ~= plr then return false end
+    if not Copy.isPose(plr, track, id) then return false end
+    if c.used[id] then return true end
+    c.used[id] = true
+    Copy.learnedFor(plr, true)[id] = table.remove(c.left, 1)
+    if #c.left == 0 then
+        Copy.calib = nil
+        F.notify("Calibrated all four of " .. plr.DisplayName .. "'s arrows", "success")
+    end
+    Copy.redraw()
+    if Air.refreshUI then Air.refreshUI() end
+    return true
+end
+
+function Copy.swap(dir)
+    if not Copy.swapLR then return dir end
+    if dir == "LEFT" then return "RIGHT" end
+    if dir == "RIGHT" then return "LEFT" end
+    return dir
+end
+
+-- They hit an arrow: you hit the same one. You let go when their pose stops
+-- (they let go, or hit their next arrow).
+function Copy.arrow(track, id)
+    if not Copy.on or Copy.mode ~= "ARROWS" then return end
+    if not Copy.isPose(Copy.target, track, id) then return end
+    local dir = Copy.dirOf(Copy.target, id)
+    if not dir then
+        Copy.unknown = Copy.unknown + 1
+        Copy.redraw()
+        return
+    end
+    dir = Copy.swap(dir)
+    local row = F.rowForDir(dir)
+    if not row then return end
+    if Copy.down[dir] then             -- still down from their last pose on this arrow
+        Copy.down[dir] = nil
+        pcall(F.noteRelease, row, true)
+    end
+    local ok, err = pcall(F.notePress, row, true)
+    if not ok then
+        F.log("copy arrows: " .. tostring(err))
+        return
+    end
+    Copy.downN = Copy.downN + 1
+    local n = Copy.downN
+    Copy.down[dir] = n
+    local conn
+    conn = track.Stopped:Connect(function()
+        if Copy.down[dir] ~= n then        -- a later pose took this arrow over
+            conn:Disconnect()
+            return
+        end
+        local okP, playing = pcall(function() return track.IsPlaying end)
+        if okP and playing then return end  -- stopped and played again at once: still down
+        conn:Disconnect()
+        Copy.down[dir] = nil
+        pcall(F.noteRelease, row, true)
+    end)
+end
+
+function Copy.releaseAll()
+    local was = Copy.down
+    Copy.down = {}
+    for dir in pairs(was) do
+        local row = F.rowForDir(dir)
+        if row then pcall(F.noteRelease, row, true) end
+    end
+end
+
+function Copy.setMode(m)
+    if Copy.mode == m then return end
+    Copy.releaseAll()
+    Copy.dropLinks()
+    Copy.mode = m
+    Copy.unknown = 0
+    if Copy.on then Copy.remirror() end
     Copy.redraw()
 end
 
@@ -15805,6 +15994,45 @@ function F.buildTab_Fly(pages)
     rh.TextYAlignment = Enum.TextYAlignment.Top
     y = y + 56
 
+    -- copy someone's arrows: when they hit one, you fly that way too
+    local cpBtn = F.makeBtn(pg, "", UDim2.new(0,8,0,y), UDim2.new(0,190,0,26), C(35,35,55), nil, 9)
+    local swBtn = F.makeBtn(pg, "", UDim2.new(0,206,0,y), UDim2.new(0,190,0,26), C(35,35,55), nil, 9)
+    y = y + 30
+    local cpLbl = F.makeLabel(pg, "", UDim2.new(0,8,0,y), UDim2.new(1,-16,0,28), C(130,130,150), Enum.TextXAlignment.Left, 9)
+    cpLbl.TextWrapped = true
+    cpLbl.TextYAlignment = Enum.TextYAlignment.Top
+    y = y + 32
+    cpBtn.MouseButton1Click:Connect(function()
+        if Copy.on and Copy.mode == "ARROWS" then
+            Copy.setOn(false)
+        else
+            Copy.setMode("ARROWS")
+            if not Copy.on then Copy.setOn(true) end
+        end
+    end)
+    swBtn.MouseButton1Click:Connect(function()
+        Copy.swapLR = not Copy.swapLR
+        Copy.releaseAll()
+        Copy.redraw()
+    end)
+    Fly.paintCopy = function()
+        if not cpBtn.Parent then return end
+        local on = Copy.on and Copy.mode == "ARROWS"
+        cpBtn.Text = on and "COPY THEIR ARROWS: ON" or "COPY THEIR ARROWS: OFF"
+        cpBtn.BackgroundColor3 = on and C(60,190,120) or C(35,35,55)
+        swBtn.Text = Copy.swapLR and "SWAP L/R: ON" or "SWAP L/R: OFF"
+        swBtn.BackgroundColor3 = Copy.swapLR and C(60,190,120) or C(35,35,55)
+        if Copy.target then
+            local list = Copy.knownList(Copy.target)
+            cpLbl.Text = (on and "copying " or "copies ") .. Copy.target.DisplayName
+                .. ": when they hit an arrow you pose and fly that way too. Calibrated: "
+                .. ((#list > 0) and table.concat(list, " ") or "none yet (poses matching your binds still copy)")
+        else
+            cpLbl.Text = "COPY THEIR ARROWS: pick who to copy, and CALIBRATE them, in the COPY tab"
+        end
+    end
+    Fly.paintCopy()
+
     local function slider(key, label, minV, maxV, fmt)
         F.makeLabel(pg, label, UDim2.new(0,8,0,y), UDim2.new(0,260,0,18), C(160,160,160), Enum.TextXAlignment.Left, 10)
         local vlbl = F.makeLabel(pg, string.format(fmt, Fly[key]), UDim2.new(0,286,0,y), UDim2.new(0,110,0,18),
@@ -15958,12 +16186,12 @@ function F.buildAirSection(pg, y)
     slider("clashWindow", "HOW CLOSE TOGETHER COUNTS AS AT ONCE (s)", 0.05, 0.4, "%.2f")
     slider("tpDist",      "CLASH TELEPORT, AT MOST (studs)", 4, 16, "%.0f")
 
-    local teachBtn = F.makeBtn(pg, "TEACH THEIR ARROWS", UDim2.new(0,8,0,y), UDim2.new(0,190,0,26), C(35,35,55), nil, 9)
+    local teachBtn = F.makeBtn(pg, "CALIBRATE THEIR ARROWS", UDim2.new(0,8,0,y), UDim2.new(0,190,0,26), C(35,35,55), nil, 9)
     teachBtn.MouseButton1Click:Connect(function() Air.startTeach() end)
     local teachLbl = F.makeLabel(pg, "", UDim2.new(0,206,0,y), UDim2.new(0,190,0,26), C(160,160,180), Enum.TextXAlignment.Left, 9)
     teachLbl.TextWrapped = true
     y = y + 30
-    note("To clash on the same arrow, the script has to know which arrow each of their poses is. It knows when they use the same animations as your binds. For anything else press TEACH and have them hit LEFT, DOWN, UP, RIGHT once each, in that order. An arrow it can't tell clashes on timing alone.", 52)
+    note("To clash on the same arrow, the script has to know which arrow each of their poses is. It knows when they use the same animations as your binds. For anything else press CALIBRATE (the COPY tab shares it) and have them hit LEFT, DOWN, UP, RIGHT once each, in that order. An arrow it can't tell clashes on timing alone.", 62)
 
     -- animations
     local t3 = F.makeLabel(pg, "ANIMATIONS", UDim2.new(0,8,0,y), UDim2.new(1,-16,0,18), C(255,80,180), Enum.TextXAlignment.Left, 11)
@@ -15993,22 +16221,16 @@ function F.buildAirSection(pg, y)
         if not fightBtn.Parent then return end
         fightBtn.Text = Air.on and "STOP FIGHT" or "START FIGHT"
         fightBtn.BackgroundColor3 = Air.on and C(200,90,40) or C(35,35,55)
-        local known = {}
-        if Air.taughtFor and Air.taughtFor == currentTarget then
-            for _, d in pairs(Air.taught) do known[d] = true end
-        end
-        local list = {}
-        for _, d in ipairs(Air.DIRS) do
-            if known[d] then table.insert(list, d) end
-        end
-        if Air.teach then
-            teachLbl.Text = "waiting for their " .. Air.teach[1] .. "…"
+        local cal = Copy.calib
+        local list = Copy.knownList(currentTarget)
+        if cal and cal.plr == currentTarget then
+            teachLbl.Text = "waiting for their " .. tostring(cal.left[1]) .. "…"
             teachLbl.TextColor3 = C(255,220,80)
         elseif #list > 0 then
-            teachLbl.Text = "taught: " .. table.concat(list, " ")
+            teachLbl.Text = "calibrated: " .. table.concat(list, " ")
             teachLbl.TextColor3 = C(60,190,120)
         else
-            teachLbl.Text = "not taught"
+            teachLbl.Text = "not calibrated"
             teachLbl.TextColor3 = C(130,130,150)
         end
         paintStatus()
@@ -17350,7 +17572,7 @@ function F.buildTab_Copy(pages)
     title.Font = Enum.Font.GothamBlack
     F.regText(title)
     y = y + 24
-    local intro = F.makeLabel(pg, "Pick a player. COPY MOVES plays what they're playing on your character, on the same frame, so everyone sees you copy them. Or put any animation they play into one of your directions below.",
+    local intro = F.makeLabel(pg, "Pick a player. ARROWS: when they hit an arrow you hit the same one, with your own pose, and fly that way while flying. EXACT ANIMS: you play their exact animations. Or put their animations into your notes below.",
         UDim2.new(0,8,0,y), UDim2.new(1,-16,0,40), C(130,130,150), Enum.TextXAlignment.Left, 9)
     intro.TextWrapped = true
     intro.TextYAlignment = Enum.TextYAlignment.Top
@@ -17375,10 +17597,10 @@ function F.buildTab_Copy(pages)
     playPad.Parent = plist
     y = y + 124
 
-    local selLbl = F.makeLabel(pg, "", UDim2.new(0,8,0,y), UDim2.new(1,-16,0,32), C(160,160,180), Enum.TextXAlignment.Left, 10)
+    local selLbl = F.makeLabel(pg, "", UDim2.new(0,8,0,y), UDim2.new(1,-16,0,46), C(160,160,180), Enum.TextXAlignment.Left, 10)
     selLbl.TextWrapped = true
     selLbl.TextYAlignment = Enum.TextYAlignment.Top
-    y = y + 36
+    y = y + 50
 
     local function paint(b, on, onTxt, offTxt, color)
         b.Text = on and onTxt or offTxt
@@ -17398,6 +17620,24 @@ function F.buildTab_Copy(pages)
         Copy.redraw()
     end)
     y = y + 34
+    local modeBtn = F.makeBtn(pg, "", UDim2.new(0,8,0,y), UDim2.new(0,126,0,28), C(35,35,55), nil, 9)
+    local calBtn  = F.makeBtn(pg, "", UDim2.new(0,140,0,y), UDim2.new(0,126,0,28), C(35,35,55), nil, 9)
+    local swapBtn = F.makeBtn(pg, "", UDim2.new(0,272,0,y), UDim2.new(0,124,0,28), C(35,35,55), nil, 9)
+    modeBtn.MouseButton1Click:Connect(function()
+        Copy.setMode((Copy.mode == "ARROWS") and "EXACT" or "ARROWS")
+    end)
+    calBtn.MouseButton1Click:Connect(function() Copy.calibrate(Copy.target) end)
+    swapBtn.MouseButton1Click:Connect(function()
+        Copy.swapLR = not Copy.swapLR
+        Copy.releaseAll()
+        Copy.redraw()
+    end)
+    y = y + 34
+    local arrowHelp = F.makeLabel(pg, "ARROWS has to know which of their poses is which arrow. Poses that match your own binds work already. For the rest press CALIBRATE and have them hit LEFT, DOWN, UP, RIGHT once each, in that order (AIR COMBAT shares it). SWAP L/R: their LEFT is your RIGHT, so face to face you both go the same way. WALK TOO, SAME FRAME and COPY SPEED are for EXACT.",
+        UDim2.new(0,8,0,y), UDim2.new(1,-16,0,62), C(130,130,150), Enum.TextXAlignment.Left, 9)
+    arrowHelp.TextWrapped = true
+    arrowHelp.TextYAlignment = Enum.TextYAlignment.Top
+    y = y + 66
     local moveHelp = F.makeLabel(pg, "WALK TOO also copies their walk, run, idle and jump (otherwise you keep your own). SAME FRAME keeps your copy exactly in step with theirs.",
         UDim2.new(0,8,0,y), UDim2.new(1,-16,0,26), C(130,130,150), Enum.TextXAlignment.Left, 9)
     moveHelp.TextWrapped = true
@@ -17419,7 +17659,7 @@ function F.buildTab_Copy(pages)
         C(120,220,255), Enum.TextXAlignment.Left, 12)
     t2.Font = Enum.Font.GothamBold
     y = y + 22
-    local h2 = F.makeLabel(pg, "Everything they play shows up here (newest on top). Press ◀ ▼ ▲ ▶ to make that note play it, or ▷ to try it on yourself. FILL puts their next four different poses into LEFT, DOWN, UP, RIGHT.",
+    local h2 = F.makeLabel(pg, "Everything they play shows up here (newest on top). Press ◀ ▼ ▲ ▶ to make that note play it (on THEIR ARROW: to say which arrow it is for them), or ▷ to try it. FILL puts their next four different poses into LEFT, DOWN, UP, RIGHT.",
         UDim2.new(0,8,0,y), UDim2.new(1,-16,0,40), C(130,130,150), Enum.TextXAlignment.Left, 9)
     h2.TextWrapped = true
     h2.TextYAlignment = Enum.TextYAlignment.Top
@@ -17427,7 +17667,7 @@ function F.buildTab_Copy(pages)
 
     local intoBtn = F.makeBtn(pg, "", UDim2.new(0,8,0,y), UDim2.new(0,126,0,26), C(70,120,255), nil, 9)
     intoBtn.MouseButton1Click:Connect(function()
-        Copy.into = (Copy.into == "BINDS") and "CUTTER" or "BINDS"
+        Copy.into = (Copy.into == "BINDS" and "CUTTER") or (Copy.into == "CUTTER" and "THEIRS") or "BINDS"
         if Copy.into == "CUTTER" and not cutterEnabled then
             F.notify("The cutter is OFF — turn it on in the CUTTER tab so your notes play these", "warn")
         end
@@ -17524,6 +17764,18 @@ function F.buildTab_Copy(pages)
             local s = "watching " .. tgt.DisplayName .. " (@" .. tgt.Name .. ")"
             if Copy.on then s = "COPYING " .. tgt.DisplayName .. " (@" .. tgt.Name .. ")" end
             if Copy.fill then s = s .. "\nfilling: their next poses go into " .. table.concat(Copy.fill, ", ") end
+            if Copy.mode == "ARROWS" then
+                local cal = Copy.calib
+                if cal and cal.plr == tgt then
+                    s = s .. "\ncalibrating: waiting for their " .. tostring(cal.left[1])
+                else
+                    local list = Copy.knownList(tgt)
+                    s = s .. "\ncalibrated: " .. ((#list > 0) and table.concat(list, " ") or "nothing yet (poses that match your binds still copy)")
+                    if Copy.on and Copy.unknown > 0 then
+                        s = s .. "  ·  " .. Copy.unknown .. " of their poses it couldn't place"
+                    end
+                end
+            end
             selLbl.Text = s
             selLbl.TextColor3 = Copy.on and C(120,255,150) or C(120,220,255)
         else
@@ -17533,7 +17785,11 @@ function F.buildTab_Copy(pages)
         paint(copyBtn, Copy.on, "■ STOP COPYING", "▶ COPY MOVES", C(60,190,120))
         paint(walkBtn, Copy.walkToo, "WALK TOO: ON", "WALK TOO: OFF")
         paint(syncBtn, Copy.sync, "SAME FRAME: ON", "SAME FRAME: OFF")
-        intoBtn.Text = "PUT INTO: " .. Copy.into
+        modeBtn.Text = (Copy.mode == "ARROWS") and "COPY: ARROWS" or "COPY: EXACT ANIMS"
+        modeBtn.BackgroundColor3 = (Copy.mode == "ARROWS") and C(255,80,180) or C(70,120,255)
+        paint(calBtn, Copy.calib ~= nil and Copy.calib.plr == tgt, "CALIBRATING (stop)", "CALIBRATE", C(255,160,40))
+        paint(swapBtn, Copy.swapLR, "SWAP L/R: ON", "SWAP L/R: OFF")
+        intoBtn.Text = (Copy.into == "THEIRS") and "SET: THEIR ARROW" or ("PUT INTO: " .. Copy.into)
         paint(fillBtn, Copy.fill ~= nil, "FILLING... (stop)", "FILL NEXT 4 POSES", C(255,160,40))
 
         for _, c in ipairs(slist:GetChildren()) do
@@ -17558,6 +17814,8 @@ function F.buildTab_Copy(pages)
             local meta = string.format("%s  ·  %s  ·  ×%d", e.id,
                 e.length > 0 and string.format("%.2fs", e.length) or "?s", e.count)
             if e.bad then meta = meta .. "  ·  ⚠ won't play for you here" end
+            local theirDir = Copy.dirOf(tgt, e.id)
+            if theirDir then meta = meta .. "  ·  their " .. ARROW_SYMBOLS[theirDir] end
             local ml = F.makeLabel(card, meta, UDim2.new(0,8,0,20), UDim2.new(1,-172,0,16),
                 e.bad and C(255,160,90) or C(140,140,160), Enum.TextXAlignment.Left, 9)
             ml.TextTruncate = Enum.TextTruncate.AtEnd
