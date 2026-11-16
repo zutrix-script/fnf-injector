@@ -1,16 +1,16 @@
 --[[
     ╔══════════════════════════════════════════════════════╗
     ║         FNF ANIMATION INJECTOR v7.2                  ║
-    ║  Arrow HUD • Dynamic Face • Anim Maker • Leg Lock    ║
+    ║  Arrow HUD • Dynamic Face • Leg Lock                 ║
     ║  + Idle BPM Speed Control                             ║
-    ║  + Live Preview • Favorites • Playlist • Themes       ║
+    ║  + Themes                                             ║
     ║  + Hold-to-Loop + Weighted Alt Animations (per bind)  ║
     ║  + Dynamic Spacing System (search/toggle/presets)     ║
     ║  + Full Silhouette Mode (CAM tab)                     ║
     ║  + NEW: Safe re-inject + UNLOAD (title bar)           ║
     ║  + NEW: Real FNF arrows, notes, splashes and icons    ║
     ║  + NEW: ARMS tab: mix animations into your poses      ║
-    ║  + NEW: STAGE tab: BF, GF & opponent, screen or world ║
+    ║  + NEW: FALL tab: sing while you fall                 ║
     ║  + NEW: Strum engine • the game's hold notes          ║
     ║  + NEW: Ride lock v4: others see you stuck on it      ║
     ║  + NEW: COPY tab: copy a player's moves               ║
@@ -25,16 +25,22 @@
     LOCAL AIM points your arms by turning the joints directly, seen
     from your camera; only you see that one.
 
-    STAGE: BF, GF and an opponent (Dad, Spooky, Tricky, Sonic.exe,
-    any baked character) can stand IN THE GAME as billboards only
-    your client has, or stay ON SCREEN. GF sways to the beat, BF
-    sings what you press, the opponent sings when your RP opponent
-    poses. Arrows: a strum engine plays the game's own animations
+    ARROWS: a strum engine plays the game's own animations
     (press, confirm, held glow, hold-cover sparks) on your strip and
     the opponent's. Holding a key gives the game's hold trail, out
     from under its arrow, and holding builds health, faster the
     longer you hold.
     Sprites are local files made by the scripts in tools/.
+
+    v7.2.6
+      * New FALL tab, for when you get ejected or any fall through
+        the air: sing on the way down. Pick your fall speed (0-200
+        mph); it can take you up first. The wind rushes past, your
+        arrows sway and budge the way you pose, your body sways and
+        leans, and the camera shakes. SYNC WITH: search a player and
+        fall level with them, or exactly as fast as them. Key: T.
+      * Removed the STAGE, MAKER, PREVIEW, FAVES, LIST and VIDEO tabs,
+        and the black screen fade key that went with VIDEO.
 
     v7.2.5
       * SETTINGS > RP TUG-OF-WAR: choose the CLOSEST and FURTHEST
@@ -266,7 +272,7 @@ local sectionPrevKey     = "LeftBracket"   -- [ to go prev
 -- ============================================================
 local SpacingSystem          -- ★ forward-declared so F.setupCharacter can see it
 local SPACING                -- forward-declared: the save code above its definition needs it
-local INJECTOR_VERSION = "7.2.5"   -- up here so everything can read it
+local INJECTOR_VERSION = "7.2.6"   -- up here so everything can read it
 local animTracks   = {}
 local idleTrack    = nil
 local connections  = {}
@@ -516,6 +522,37 @@ local Air = {
     mine = {}, theirs = {},
     lagT = 0, lagV = 0.15, hitN = 0, bannerN = 0,
     tracks = {}, tracksFor = nil, hud = nil, refreshUI = nil,
+}
+
+-- ============================================================
+--  FALL STATE (see FALL)
+-- ============================================================
+local Fall = {
+    key      = "T",
+    mph      = 25,        -- how fast you fall: 0-200 mph (0 hangs you in the air)
+    rise     = 0,         -- start low: go up to this many studs above the ground first (0 = don't)
+    tilt     = 10,        -- degrees you lean back while you fall
+    face     = "KEEP",    -- KEEP the way you faced, face the SCREEN, or face THEM
+    steer    = true,      -- the move keys drift you sideways (14 studs/s)
+    wind     = true,  windAmt  = 0.7,   -- wind rushing past you (only you see it)
+    sound    = true,                    -- and hear it
+    arrows   = true,  arrowAmt = 0.6,   -- your arrows sway in the wind
+    budge    = true,                    -- a pose knocks its arrow, and you, a little its way
+    sway     = true,  swayAmt  = 0.6,   -- your body sways (everyone sees it)
+    shake    = true,  shakeAmt = 0.5,   -- the camera shakes
+    anim     = "",                      -- falling animation ID; empty = your character's own fall
+    match    = "HEIGHT",                -- SYNC WITH: level with them (HEIGHT) or as fast as them (SPEED)
+
+    -- live
+    on = false, phase = "", root = nil, hum = nil, att = nil, lv = nil, conn = nil, savedAuto = nil,
+    path = nil, vy = 0, riseTo = 0, stuckT = 0, t0 = 0, stand = 3,
+    rot = CFrame.new(), faceDir = Vector3.new(0, 0, -1),
+    kp = Vector3.new(0, 0, 0), kv = Vector3.new(0, 0, 0),     -- the budge: where it has you, how fast
+    syncPlr = nil, syncOff = nil, rp = nil, rpT = 0,
+    track = nil, fx = nil, arrowSt = {}, arrowsMoved = false,
+    shakeAmp = 0, shakeBound = false, camOff = nil, camSet = nil, fedCam = false,
+    mphNow = 0, gapNow = nil, note = nil,
+    refreshUI = nil, refreshSync = nil,
 }
 
 -- ============================================================
@@ -2934,11 +2971,11 @@ function Keys.rows()
     add(Boss.key, "Boss battle view")
     add(Ride.key, "Ride lock")
     add(Fly.key, "Fly")
+    add(Fall.key, "Fall")
     add(Keys.overlayKey, "This list")
     add(Keys.beatKey, "Beat zoom")
     add(Pose.dodgeKey, "Dodge animation")
     add(Notes.key, "Hold streaks")
-    add(Vid.boKey, "Black screen fade")
     add(Result.winKey, "Win")
     add(Result.loseKey, "Lose")
     add(Cam2.introKey, "Intro shot")
@@ -3369,6 +3406,8 @@ function Save.collect()
                 returnHome = Fly.returnHome, returnTime = Fly.returnTime, snapCut = Fly.snapCut, hover = Fly.hover,
                 lean = Fly.lean, anims = Fly.anims },
 
+        fall = Fall.saveData(),
+
         air = { rounds = Air.rounds, damage = Air.damage, dashDist = Air.dashDist, knock = Air.knock,
                 koHold = Air.koHold, circle = Air.circle, circleSpeed = Air.circleSpeed,
                 keepClose = Air.keepClose, maxDist = Air.maxDist, sameArrow = Air.sameArrow,
@@ -3619,6 +3658,7 @@ function Save.apply(d, silentUi)
     sec("ride",    function() copyInto(Ride, d.ride, { enabled = true }) end)
     sec("fly",     function() copyInto(Fly, d.fly, { enabled = true }) end)
     sec("air",     function() copyInto(Air, d.air, { on = true }) end)
+    sec("fall",    function() Fall.loadData(d.fall) end)
     sec("idle",    function()
         if type(d.idle) ~= "table" then return end
         Idle.id = type(d.idle.id) == "string" and d.idle.id:gsub("%D", "") or ""
@@ -4746,6 +4786,7 @@ end
 
 function Ride.lock()
     if Fly.enabled then Fly.stop("ride lock took over") end
+    if Fall.on then Fall.stop("ride lock took over") end
     local root = character and character:FindFirstChild("HumanoidRootPart")
     local hum = character and character:FindFirstChildOfClass("Humanoid")
     if not root or not hum then return false end
@@ -5071,6 +5112,7 @@ function Fly.start()
         return false
     end
     if Ride.enabled then Ride.unlock("flying instead") end
+    if Fall.on then Fall.stop("flying instead") end
 
     local att = Instance.new("Attachment")
     att.Name = "FNFFlyAtt"
@@ -5967,6 +6009,728 @@ function Air.step(dt, now)
 end
 
 -- ============================================================
+--  FALL (FALL tab)
+--  For when you get ejected, or any fall through the air: sing on
+--  the way down. You fall straight down at the speed you pick
+--  (0-200 mph; Roblox's scale is 1 stud = 28 cm) with your fall
+--  animation under your poses. Everyone sees your body fall, lean
+--  back, sway and budge, because it's your own character. Only you
+--  see the wind, the arrows swaying and the camera shaking.
+--  Sideways you never go faster than 40 studs/s, and up never faster
+--  than 40 studs/s (GO UP FIRST, or staying level with who you sync
+--  with), the same cap as FLY. You slow down before the ground and
+--  land normally, and it never drops you into the void.
+-- ============================================================
+Fall.MPH      = 0.44704 / 0.28     -- studs/s in 1 mph
+Fall.ZERO     = Vector3.new(0, 0, 0)
+Fall.SIDE_MAX = 40                 -- studs/s sideways, at most
+Fall.UP_MAX   = 40                 -- studs/s up, at most
+Fall.STEER    = 14                 -- studs/s the move keys drift you
+Fall.ACCEL    = 320                -- studs/s² you speed up or slow down at in the air
+Fall.BRAKE    = 300                -- studs/s² you slow down at before the ground
+Fall.SAVE = { "key", "mph", "rise", "tilt", "face", "steer", "wind", "windAmt", "sound", "arrows",
+              "arrowAmt", "budge", "sway", "swayAmt", "shake", "shakeAmt", "anim", "match" }
+-- which way a pose budges its arrow on screen (y goes down)
+Fall.KICK = { LEFT = Vector2.new(-1, 0), DOWN = Vector2.new(0, 1), UP = Vector2.new(0, -1), RIGHT = Vector2.new(1, 0) }
+
+function Fall.flat(v, fallback)
+    local f = Vector3.new(v.X, 0, v.Z)
+    if f.Magnitude > 1e-3 then return f.Unit end
+    return fallback
+end
+
+-- the ground and walls: never you, or who you sync with
+function Fall.rayParams()
+    local now = os.clock()
+    if Fall.rp and now - Fall.rpT < 0.5 then return Fall.rp end
+    local p = RaycastParams.new()
+    p.FilterType = Enum.RaycastFilterType.Exclude
+    local list = {}
+    if character then table.insert(list, character) end
+    local sc = Fall.syncPlr and Fall.syncPlr.Character
+    if sc then table.insert(list, sc) end
+    p.FilterDescendantsInstances = list
+    pcall(function() p.RespectCanCollide = true end)
+    Fall.rp, Fall.rpT = p, now
+    return p
+end
+
+-- studs from your root's middle down to your feet when you stand
+function Fall.standHeight(hum, root)
+    if hum.RigType == Enum.HumanoidRigType.R6 then return 3 end
+    return hum.HipHeight + root.Size.Y / 2
+end
+
+-- how far your feet are above the ground right under you; nil when
+-- there's no ground within 3000 studs
+function Fall.floorGap(pos)
+    local hit = Workspace:Raycast(pos, Vector3.new(0, -3000, 0), Fall.rayParams())
+    if not hit then return nil end
+    return pos.Y - hit.Position.Y - (Fall.stand or 3)
+end
+
+function Fall.syncRoot()
+    local p = Fall.syncPlr
+    if not (p and p.Parent) then return nil end
+    local c = p.Character
+    return c and c:FindFirstChild("HumanoidRootPart")
+end
+
+-- ---------- your fall animation, under your poses ----------
+function Fall.stopAnim()
+    local t = Fall.track
+    Fall.track = nil
+    if t then pcall(function() t:Stop(0.25) end) end
+end
+
+function Fall.playAnim()
+    Fall.stopAnim()
+    if not Fall.on then return end
+    local hum = Fall.hum
+    local animr = hum and hum:FindFirstChildOfClass("Animator")
+    if not animr then return end
+    local anim
+    local id = tostring(Fall.anim or ""):match("%d+")
+    if id then
+        anim = Instance.new("Animation")
+        anim.AnimationId = "rbxassetid://" .. id
+    else
+        -- your character's own (Roblox's), so it plays in any game
+        local animate = character and character:FindFirstChild("Animate")
+        local folder = animate and animate:FindFirstChild("fall")
+        anim = folder and (folder:FindFirstChild("FallAnim") or folder:FindFirstChildOfClass("Animation"))
+        if not (anim and anim:IsA("Animation")) then return end
+    end
+    local ok, t = pcall(function() return animr:LoadAnimation(anim) end)
+    if not ok or not t then return end
+    t.Priority = Enum.AnimationPriority.Movement     -- your poses (Action) play over it
+    t.Looped = true
+    t:Play(0.3)
+    Fall.track = t
+end
+
+-- ---------- what only you see and hear: the wind ----------
+function Fall.newStreak(s, anywhere, fromTop)
+    -- mostly down the sides, so the middle stays clear
+    s.x = (math.random() < 0.5) and (0.02 + math.random() * 0.3) or (0.68 + math.random() * 0.3)
+    if anywhere then
+        s.y = math.random()
+    elseif fromTop then
+        s.y = -0.1 - math.random() * 0.25
+    else
+        s.y = 1.1 + math.random() * 0.25
+    end
+    s.spd = 0.7 + math.random() * 0.9
+    s.len = 0.5 + math.random()
+end
+
+function Fall.newLine(l, anywhere, fromTop)
+    local a = math.random() * math.pi * 2
+    local r = 3.5 + math.random() * 9
+    local y
+    if anywhere then
+        y = -24 + math.random() * 48
+    elseif fromTop then
+        y = 24 + math.random() * 8
+    else
+        y = -24 - math.random() * 8
+    end
+    l.off = Vector3.new(math.cos(a) * r, y, math.sin(a) * r)
+    l.spd = 0.8 + math.random() * 0.5
+end
+
+function Fall.dropFx()
+    local fx = Fall.fx
+    Fall.fx = nil
+    if not fx then return end
+    for _, x in ipairs({ fx.gui, fx.folder, fx.sound }) do
+        pcall(function() x:Destroy() end)
+    end
+end
+
+function Fall.buildFx()
+    Fall.dropFx()
+    local fx = { streaks = {}, lines = {} }
+
+    -- streaks down the sides of your screen
+    local sg = F.own(Instance.new("ScreenGui"))
+    sg.Name = "FNFFallWind"
+    sg.ResetOnSpawn = false
+    sg.IgnoreGuiInset = true
+    sg.DisplayOrder = F.silZ(50)        -- under the arrows
+    sg.Parent = PlayerGui
+    fx.gui = sg
+    for i = 1, 26 do
+        local f = Instance.new("Frame")
+        f.AnchorPoint = Vector2.new(0.5, 0.5)
+        f.BorderSizePixel = 0
+        f.BackgroundColor3 = Color3.fromRGB(235, 245, 255)
+        f.BackgroundTransparency = 1
+        f.Size = UDim2.new(0, 2, 0, 40)
+        f.Parent = sg
+        local s = { frame = f }
+        Fall.newStreak(s, true)
+        fx.streaks[i] = s
+    end
+
+    -- thin lines rushing past you in the world: under your camera, so
+    -- they're only on your screen and nothing can touch or hit them
+    local folder = F.own(Instance.new("Folder"))
+    folder.Name = "FNFFallWind"
+    folder.Parent = Workspace.CurrentCamera
+    fx.folder = folder
+    for i = 1, 18 do
+        local p = Instance.new("Part")
+        p.Name = "Wind"
+        p.Anchored = true
+        p.CanCollide = false
+        p.CanTouch = false
+        p.CanQuery = false
+        p.CastShadow = false
+        p.Material = Enum.Material.Neon
+        p.Color = Color3.fromRGB(230, 240, 255)
+        p.Transparency = 1
+        p.Size = Vector3.new(0.06, 4, 0.06)
+        p.Parent = folder
+        local l = { part = p }
+        Fall.newLine(l, true)
+        fx.lines[i] = l
+    end
+
+    -- the rush of air: Roblox's own falling sound (the one your character
+    -- already has, else the stock file), on your client only
+    local own = Fall.root and Fall.root:FindFirstChild("FreeFalling")
+    local snd = F.own(Instance.new("Sound"))
+    snd.Name = "FNFFallWind"
+    snd.SoundId = (own and own:IsA("Sound") and own.SoundId ~= "") and own.SoundId
+        or "rbxasset://sounds/action_falling.ogg"
+    snd.Looped = true
+    snd.Volume = 0
+    snd.Parent = SoundService
+    pcall(function() snd:Play() end)
+    fx.sound = snd
+    Fall.fx = fx
+end
+
+-- k: how strong the wind looks (0..1); speed: studs/s up or down;
+-- up: you're going up, so the air goes the other way
+function Fall.fxStep(dt, k, speed, up, rootPos)
+    local fx = Fall.fx
+    if not fx then return end
+    local on = Fall.wind and k > 0.01
+    local cam = Workspace.CurrentCamera
+    local vh = (cam and cam.ViewportSize.Y) or 800
+    local now = os.clock()
+
+    local rush = 0.35 + speed / 90            -- screens a second the streaks cross
+    for _, s in ipairs(fx.streaks) do
+        local f = s.frame
+        if on then
+            local dy = dt * s.spd * rush
+            s.y = s.y + (up and dy or -dy)    -- falling: the air rushes up past you
+            s.x = s.x + math.sin(now * 0.7 + s.spd * 9) * dt * 0.01
+            if s.y < -0.3 or s.y > 1.3 then Fall.newStreak(s, false, up) end
+            f.Position = UDim2.new(s.x, 0, s.y, 0)
+            f.Size = UDim2.new(0, 2, 0, vh * (0.03 + 0.22 * math.min(speed / 250, 1)) * s.len)
+            f.BackgroundTransparency = math.clamp(1 - k * 0.55, 0, 1)
+        elseif f.BackgroundTransparency < 1 then
+            f.BackgroundTransparency = 1
+        end
+    end
+
+    local rel = 6 + speed * 0.9                -- studs a second the lines pass you
+    for _, l in ipairs(fx.lines) do
+        local p = l.part
+        if on then
+            local dy = dt * rel * l.spd
+            l.off = l.off + Vector3.new(0, up and -dy or dy, 0)
+            if l.off.Y > 32 or l.off.Y < -32 then Fall.newLine(l, false, up) end
+            p.Size = Vector3.new(0.06, 1.5 + math.min(speed / 25, 12), 0.06)
+            p.CFrame = CFrame.new(rootPos + l.off)
+            p.Transparency = math.clamp(1 - k * 0.6, 0, 1)
+        elseif p.Transparency < 1 then
+            p.Transparency = 1
+        end
+    end
+
+    local snd = fx.sound
+    if snd then
+        local want = (Fall.sound and Fall.wind) and (0.1 + 0.7 * math.min(speed / 200, 1)) * math.max(k, 0.3) or 0
+        snd.Volume = snd.Volume + (want - snd.Volume) * math.min(dt * 4, 1)
+        snd.PlaybackSpeed = 0.85 + 0.4 * math.min(speed / 250, 1)
+    end
+end
+
+-- ---------- your arrows: sway in the wind, budge when you pose ----------
+function Fall.arrowState(key)
+    local s = Fall.arrowSt[key]
+    if not s then
+        s = { x = 0, y = 0, vx = 0, vy = 0, r = 0, vr = 0 }
+        Fall.arrowSt[key] = s
+    end
+    return s
+end
+
+-- k: how much they sway (0..1)
+function Fall.arrowStep(dt, now, k)
+    local h = math.min(dt, 1/30)
+    local amp = Arrows.size * 0.13 * k
+    local gust = math.noise(now * 0.35, 3.3) * 2 * amp     -- the whole strip leans with the gusts
+    for _, set in ipairs({ arrowHudFrames, Arrows.oppFrames or {} }) do
+        for i, dir in ipairs(ARROW_ORDER) do
+            local f = set[dir]
+            local bg = f and f.bg
+            if bg and bg.Parent then
+                -- the budge springs back
+                local s = Fall.arrowState((f.cpu and "o" or "m") .. dir)
+                s.vx = s.vx + (-240 * s.x - 16 * s.vx) * h
+                s.vy = s.vy + (-240 * s.y - 16 * s.vy) * h
+                s.vr = s.vr + (-240 * s.r - 16 * s.vr) * h
+                s.x, s.y, s.r = s.x + s.vx * h, s.y + s.vy * h, s.r + s.vr * h
+
+                local seed = i * 1.7 + (f.cpu and 11 or 0)
+                local sx = math.sin(now * (1.3 + i * 0.21) + seed) * amp + gust
+                local sy = math.sin(now * (1.9 + i * 0.17) + seed * 2) * amp * 0.8
+                local rot = math.sin(now * (1.1 + i * 0.13) + seed) * 8 * k
+                bg.Position = UDim2.new(0, f.slot + Arrows.size / 2 + sx + s.x, 0.5, sy + s.y)
+                bg.Rotation = rot + s.r
+            end
+        end
+    end
+    Fall.arrowsMoved = true
+end
+
+function Fall.resetArrows()
+    for _, set in ipairs({ arrowHudFrames, Arrows.oppFrames or {} }) do
+        for _, dir in ipairs(ARROW_ORDER) do
+            local f = set[dir]
+            if f and f.bg and f.bg.Parent then
+                f.bg.Position = UDim2.new(0, f.slot + Arrows.size / 2, 0.5, 0)
+                f.bg.Rotation = 0
+            end
+        end
+    end
+    Fall.arrowSt = {}
+    Fall.arrowsMoved = false
+end
+
+-- A pose while you fall: its arrow gets knocked its way, and so do you,
+-- a little (screen left / right, up / down), then you both spring back.
+function Fall.onPose(dir)
+    if not Fall.on or not Fall.budge then return end
+    local k = Fall.KICK[dir]
+    if not k then return end
+    local sc = Arrows.size / 64
+    local s = Fall.arrowState("m" .. dir)
+    s.vx = s.vx + k.X * 300 * sc
+    s.vy = s.vy + k.Y * 300 * sc
+    s.vr = s.vr + k.X * 140
+    local cam = Workspace.CurrentCamera
+    local right = cam and Fall.flat(cam.CFrame.RightVector, nil) or nil
+    local push = Vector3.new(0, -k.Y, 0)
+    if right then push = push + right * k.X end
+    Fall.kv = Fall.kv + push * 7
+end
+
+-- ---------- the camera shake (only you see it) ----------
+function Fall.shakeOffset(now)
+    local a = Fall.shakeAmp
+    if a <= 0.001 then return nil end
+    local t = now * (12 + 16 * a)
+    local px = math.noise(t, 11.1) * 2 * 0.25 * a
+    local py = math.noise(t, 22.2) * 2 * 0.25 * a
+    local rx = math.rad(math.noise(t, 33.3) * 2 * 1.4 * a)
+    local ry = math.rad(math.noise(t, 44.4) * 2 * 1.4 * a)
+    local rz = math.rad(math.noise(t, 55.5) * 2 * 1.0 * a)
+    return CFrame.new(px, py, 0) * CFrame.Angles(rx, ry, rz)
+end
+
+-- The shake goes on after the camera has moved, and comes off again
+-- before it moves next frame, so the camera never drifts from it.
+-- The cinematic camera has its own shake: that one is used instead.
+function Fall.bindShake()
+    if Fall.shakeBound then return end
+    Fall.shakeBound = true
+    RunService:BindToRenderStep("FNFFallShakeUndo", Enum.RenderPriority.First.Value, function()
+        pcall(function()
+            local cam = Workspace.CurrentCamera
+            if Fall.camOff and cam and cam.CFrame == Fall.camSet then
+                cam.CFrame = cam.CFrame * Fall.camOff:Inverse()
+            end
+        end)
+        Fall.camOff, Fall.camSet = nil, nil
+    end)
+    RunService:BindToRenderStep("FNFFallShake", Enum.RenderPriority.Camera.Value + 2, function()
+        if not Fall.on or not Fall.shake or FNFCamera.enabled then return end
+        pcall(function()
+            local cam = Workspace.CurrentCamera
+            local off = Fall.shakeOffset(os.clock())
+            if cam and off then
+                cam.CFrame = cam.CFrame * off
+                Fall.camOff, Fall.camSet = off, cam.CFrame
+            end
+        end)
+    end)
+end
+
+function Fall.unbindShake()
+    if not Fall.shakeBound then return end
+    Fall.shakeBound = false
+    pcall(function() RunService:UnbindFromRenderStep("FNFFallShake") end)
+    pcall(function() RunService:UnbindFromRenderStep("FNFFallShakeUndo") end)
+    pcall(function()
+        local cam = Workspace.CurrentCamera
+        if Fall.camOff and cam and cam.CFrame == Fall.camSet then
+            cam.CFrame = cam.CFrame * Fall.camOff:Inverse()
+        end
+    end)
+    Fall.camOff, Fall.camSet = nil, nil
+end
+
+-- ---------- start / stop ----------
+function Fall.start()
+    if Fall.on then return true end
+    local char = character
+    local root = char and char:FindFirstChild("HumanoidRootPart")
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    if not root or not hum or hum.Health <= 0 then
+        F.notify("No character to fall with", "warn")
+        return false
+    end
+    if Fly.enabled then Fly.stop("falling instead") end
+    if Ride.enabled then Ride.unlock("falling instead") end
+    -- SPACING pins you while you step in: let go first
+    pcall(function()
+        if spacing and spacing.A and spacing.A.anchored then spacing:_goHome(spacing.A, true) end
+    end)
+    if root.Anchored then
+        F.notify("Something has your character pinned in place, so FALL can't move it", "warn")
+        return false
+    end
+
+    local att = Instance.new("Attachment")
+    att.Name = "FNFFallAtt"
+    att.Parent = root
+    local lv = Instance.new("LinearVelocity")
+    lv.Name = "FNFFall"
+    lv.Attachment0 = att
+    lv.RelativeTo = Enum.ActuatorRelativeTo.World
+    lv.VelocityConstraintMode = Enum.VelocityConstraintMode.Vector
+    lv.MaxForce = math.max(root.AssemblyMass, 1) * Workspace.Gravity * 40
+    lv.VectorVelocity = Fall.ZERO
+    lv.Parent = root
+
+    Fall.root, Fall.hum, Fall.att, Fall.lv = root, hum, att, lv
+    Fall.savedAuto = hum.AutoRotate
+    hum.AutoRotate = false
+    hum.PlatformStand = true
+    Fall.stand = Fall.standHeight(hum, root)
+    Fall.rp, Fall.rpT = nil, 0
+    Fall.path = root.Position
+    -- already falling (ejected): carry on from that speed
+    Fall.vy = math.clamp(root.AssemblyLinearVelocity.Y, -200 * Fall.MPH, 0)
+    Fall.kp, Fall.kv = Fall.ZERO, Fall.ZERO
+    Fall.faceDir = Fall.flat(root.CFrame.LookVector, Vector3.new(0, 0, -1))
+    Fall.rot = CFrame.lookAt(Fall.ZERO, Fall.faceDir)
+    Fall.syncOff, Fall.note, Fall.gapNow, Fall.mphNow = nil, nil, nil, 0
+    Fall.t0 = os.clock()
+
+    -- start low: go up first (never through a roof)
+    Fall.phase = "FALL"
+    if Fall.rise > 0.5 then
+        local gap = Fall.floorGap(root.Position)
+        if gap and gap < Fall.rise - 1 then
+            local riseTo = root.Position.Y + (Fall.rise - gap)
+            local hit = Workspace:Raycast(root.Position, Vector3.new(0, riseTo - root.Position.Y + 3, 0), Fall.rayParams())
+            if hit then riseTo = math.min(riseTo, hit.Position.Y - 4) end
+            if riseTo > root.Position.Y + 1 then
+                Fall.phase, Fall.riseTo, Fall.stuckT = "RISE", riseTo, os.clock() + 0.5
+            end
+        end
+    end
+
+    Fall.on = true
+    Fall.playAnim()
+    pcall(Fall.buildFx)
+    Fall.bindShake()
+    if Fall.conn then Fall.conn:Disconnect() end
+    Fall.conn = F.own(RunService.RenderStepped:Connect(function(dt)
+        local ok, err = pcall(Fall.step, dt)
+        if not ok then
+            F.log("fall: " .. tostring(err))
+            Fall.stop("something went wrong")
+        end
+    end))
+    if Fall.refreshUI then pcall(Fall.refreshUI) end
+    F.notify((Fall.phase == "RISE") and "Going up, then you fall" or "Falling — sing on the way down", "success")
+    return true
+end
+
+function Fall.stop(reason)
+    if not Fall.on then return end
+    Fall.on = false
+    if Fall.conn then Fall.conn:Disconnect(); Fall.conn = nil end
+    pcall(function() if Fall.lv then Fall.lv:Destroy() end end)
+    pcall(function() if Fall.att then Fall.att:Destroy() end end)
+    Fall.lv, Fall.att = nil, nil
+    Fall.stopAnim()
+    Fall.unbindShake()
+    pcall(Fall.dropFx)
+    pcall(Fall.resetArrows)
+    if Fall.fedCam then
+        Fall.fedCam = false
+        if not Ride.enabled then FNFCamera.rideShake = 0 end
+    end
+    local hum, root = Fall.hum, Fall.root
+    if hum and hum.Parent then
+        pcall(function()
+            hum.PlatformStand = false
+            if Fall.savedAuto ~= nil then hum.AutoRotate = Fall.savedAuto end
+            hum:ChangeState(Enum.HumanoidStateType.Freefall)     -- lands normally
+        end)
+    end
+    if root and root.Parent then
+        pcall(function()
+            -- stand up straight again
+            local flat = Fall.flat(root.CFrame.LookVector, nil)
+            if flat then root.CFrame = CFrame.lookAt(root.Position, root.Position + flat) end
+            root.AssemblyAngularVelocity = Fall.ZERO
+        end)
+    end
+    Fall.root, Fall.hum, Fall.savedAuto, Fall.path = nil, nil, nil, nil
+    Fall.phase, Fall.note, Fall.gapNow = "", nil, nil
+    if Fall.refreshUI then pcall(Fall.refreshUI) end
+    F.notify(reason and ("Fall over — " .. reason) or "Stopped falling", "info")
+end
+
+function Fall.toggle()
+    if Fall.on then Fall.stop() else Fall.start() end
+end
+
+-- ---------- every frame while you fall ----------
+function Fall.step(dt)
+    local root, hum, lv = Fall.root, Fall.hum, Fall.lv
+    if not (root and root.Parent and hum and hum.Parent) or hum.Health <= 0 then
+        Fall.stop("lost your character")
+        return
+    end
+    if not (lv and lv.Parent) then
+        Fall.stop("the game removed the fall force")
+        return
+    end
+    dt = math.clamp(dt, 1/240, 1/15)
+    local now = os.clock()
+    if not hum.PlatformStand then hum.PlatformStand = true end    -- the game may switch it back
+    local pos = root.Position
+    local fastest = 200 * Fall.MPH
+
+    -- 1) how fast you want to go
+    local them = Fall.syncRoot()
+    local vyWant = -math.clamp(Fall.mph, 0, 200) * Fall.MPH
+    local flatWant = Fall.ZERO
+    local note = nil
+    if Fall.phase == "RISE" then
+        local left = Fall.riseTo - Fall.path.Y
+        vyWant = math.clamp(left * 3, 0, Fall.UP_MAX)
+        -- there, or something's in the way: start falling
+        if root.AssemblyLinearVelocity.Y > 3 then Fall.stuckT = math.max(Fall.stuckT, now) end
+        if left < 0.5 or now - Fall.stuckT > 0.6 then
+            Fall.phase = "FALL"
+        end
+        note = string.format("going up first, %.0f studs to go", math.max(left, 0))
+    elseif them then
+        local tv = them.AssemblyLinearVelocity
+        local name = Fall.syncPlr.DisplayName
+        if Fall.match == "SPEED" then
+            vyWant = math.clamp(tv.Y, -fastest, 0)
+            note = "falling as fast as " .. name
+        else
+            -- level with them, keeping the spacing you had
+            vyWant = math.clamp(tv.Y + (them.Position.Y - Fall.path.Y) * 3, -fastest, Fall.UP_MAX)
+            if not Fall.syncOff then
+                local off = Vector3.new(Fall.path.X - them.Position.X, 0, Fall.path.Z - them.Position.Z)
+                if off.Magnitude < 4 then off = Fall.flat(off, Vector3.new(1, 0, 0)) * 6 end
+                Fall.syncOff = off
+            end
+            local goal = them.Position + Fall.syncOff
+            flatWant = Vector3.new(tv.X, 0, tv.Z) + Vector3.new(goal.X - Fall.path.X, 0, goal.Z - Fall.path.Z) * 3
+            local dy = them.Position.Y - pos.Y
+            if math.abs(dy) > 6 then
+                note = string.format("catching up with %s, %.0f studs %s", name, math.abs(dy), (dy > 0) and "up" or "down")
+            else
+                note = "level with " .. name
+            end
+        end
+    end
+
+    -- the move keys drift you (around them, when you're level with someone)
+    if Fall.steer then
+        local md = hum.MoveDirection
+        local s = Vector3.new(md.X, 0, md.Z)
+        if s.Magnitude > 0.05 then
+            if s.Magnitude > 1 then s = s.Unit end
+            if them and Fall.match ~= "SPEED" and Fall.syncOff then
+                local o = Fall.syncOff + s * Fall.STEER * dt
+                if o.Magnitude < 4 then o = Fall.flat(o, Vector3.new(1, 0, 0)) * 4 end
+                Fall.syncOff = o
+            else
+                flatWant = flatWant + s * Fall.STEER
+            end
+        end
+    end
+    if flatWant.Magnitude > Fall.SIDE_MAX then flatWant = flatWant.Unit * Fall.SIDE_MAX end
+
+    -- ease into it (about 1.6 g at most) instead of snapping
+    local change = (vyWant - Fall.vy) * (1 - math.exp(-dt * 6))
+    local most = Fall.ACCEL * dt
+    Fall.vy = Fall.vy + math.clamp(change, -most, most)
+
+    -- 2) the ground: slow down in time, then land normally
+    local gap = Fall.floorGap(pos)
+    Fall.gapNow = gap
+    if gap then
+        if Fall.vy < 0 then
+            local limit = -math.sqrt(2 * Fall.BRAKE * math.max(gap - 0.3, 0))
+            if Fall.vy < limit then Fall.vy = limit end
+        end
+        if gap < 0.7 and Fall.phase ~= "RISE" and vyWant <= 0.5 then
+            Fall.stop((now - Fall.t0 < 0.4) and "you're on the ground (set GO UP FIRST, or jump off something)"
+                or "you landed")
+            return
+        end
+    else
+        -- nothing under you: never fall into the void
+        local floorY = Workspace.FallenPartsDestroyHeight + 60
+        if Fall.path.Y + Fall.vy * dt < floorY then
+            Fall.vy = math.max(Fall.vy, 0)
+            Fall.path = Vector3.new(Fall.path.X, math.max(Fall.path.Y, floorY), Fall.path.Z)
+            note = "nothing below you but the void, so you're held here"
+        end
+    end
+
+    local ff = Vector3.new(flatWant.X, Fall.vy, flatWant.Z)
+    Fall.path = Fall.path + ff * dt
+
+    -- 3) your body: lean back, sway, and the budge from your last pose
+    local speed = math.abs(root.AssemblyLinearVelocity.Y)
+    local sf = math.clamp(speed / 190, 0, 1)            -- 0 hanging there .. 1 at about 120 mph
+    local swayK = (Fall.sway and Fall.swayAmt or 0) * (0.55 + 0.45 * sf)
+    local h = math.min(dt, 1/30)
+    Fall.kv = Fall.kv + (-55 * Fall.kp - 9 * Fall.kv) * h
+    Fall.kp = Fall.kp + Fall.kv * h
+
+    local cam = Workspace.CurrentCamera
+    local faceDir = Fall.faceDir
+    if Fall.face == "THEM" then
+        local tr = them
+        if not tr and currentTarget and currentTarget.Character then
+            tr = currentTarget.Character:FindFirstChild("HumanoidRootPart")
+        end
+        if tr then faceDir = Fall.flat(tr.Position - pos, faceDir) end
+    elseif Fall.face == "SCREEN" and cam then
+        faceDir = Fall.flat(-cam.CFrame.LookVector, faceDir)
+    end
+    Fall.faceDir = faceDir
+    Fall.rot = Fall.rot:Lerp(CFrame.lookAt(Fall.ZERO, faceDir), 1 - math.exp(-6 * dt))
+
+    local kick = Fall.rot:VectorToObjectSpace(Fall.kp)
+    local roll  = math.rad(math.sin(now * 1.15) * 7 + math.noise(now * 0.6, 1.3) * 16) * swayK - kick.X * 0.3
+    local pitch = math.rad(Fall.tilt)
+        + math.rad(math.sin(now * 0.85 + 1.1) * 4 + math.noise(now * 0.5, 7.7) * 10) * swayK + kick.Y * 0.2
+    local yawW  = math.rad(math.sin(now * 0.6 + 2.3) * 6) * swayK
+    local rot = Fall.rot * CFrame.Angles(0, yawW, 0) * CFrame.Angles(pitch, 0, roll)
+    local swayOff = Fall.rot:VectorToWorldSpace(
+        Vector3.new(math.sin(now * 0.9) * 0.6, math.sin(now * 1.4 + 0.7) * 0.3, 0) * swayK)
+
+    -- 4) steer your body to the spot
+    local goal = Fall.path + swayOff + Fall.kp
+    local err = goal - root.Position
+    local slack = 6 + math.abs(Fall.vy) * 0.06
+    if err.Magnitude > slack then
+        -- a wall or a roof stopped you: don't let the spot run off inside it
+        local back = err - err.Unit * slack
+        Fall.path = Fall.path - back
+        err = err - back
+    end
+    local vel = ff + err * 8
+    local flat = Vector3.new(vel.X, 0, vel.Z)
+    if flat.Magnitude > Fall.SIDE_MAX then flat = flat.Unit * Fall.SIDE_MAX end
+    lv.VectorVelocity = Vector3.new(flat.X, math.clamp(vel.Y, -fastest - 20, Fall.UP_MAX + 5), flat.Z)
+    root.CFrame = CFrame.new(root.Position) * rot
+    root.AssemblyAngularVelocity = Fall.ZERO
+
+    -- 5) what only you see
+    local up = root.AssemblyLinearVelocity.Y > 2
+    local windK = (Fall.wind and Fall.windAmt or 0) * (0.3 + 0.7 * sf)
+    pcall(Fall.fxStep, dt, windK, speed, up, root.Position)
+    if Fall.arrows or Fall.budge then
+        Fall.arrowStep(dt, now, (Fall.arrows and Fall.arrowAmt or 0) * (0.5 + 0.5 * sf))
+    elseif Fall.arrowsMoved then
+        Fall.resetArrows()
+    end
+    Fall.shakeAmp = (Fall.shake and Fall.shakeAmt or 0) * (0.15 + 0.85 * sf)
+    if FNFCamera.enabled and not Ride.enabled then
+        FNFCamera.rideShake = Fall.shakeAmp * 0.7      -- the cinematic camera shakes itself
+        Fall.fedCam = true
+    elseif Fall.fedCam then
+        Fall.fedCam = false
+        if not Ride.enabled then FNFCamera.rideShake = 0 end
+    end
+
+    Fall.mphNow = speed / Fall.MPH
+    Fall.note = note
+end
+
+-- the FALL tab's status line
+function Fall.statusText()
+    if not Fall.on then
+        return "not falling — press START FALL or " .. tostring(Fall.key), false
+    end
+    local parts = { string.format("%s %.0f mph", (Fall.phase == "RISE") and "going up" or "falling", Fall.mphNow or 0) }
+    if Fall.gapNow then
+        table.insert(parts, string.format("%.0f studs above the ground", Fall.gapNow))
+    else
+        table.insert(parts, "no ground below")
+    end
+    if Fall.note then table.insert(parts, Fall.note) end
+    return table.concat(parts, "  ·  "), true
+end
+
+-- SYNC WITH: who you fall together with (nil = nobody)
+function Fall.pickSync(p)
+    Fall.syncPlr = p
+    Fall.syncOff = nil
+    Fall.rp = nil
+    if p then F.notify("Falling in sync with " .. p.DisplayName, "info") end
+    if Fall.refreshSync then pcall(Fall.refreshSync) end
+end
+
+-- ---------- save / load ----------
+function Fall.saveData()
+    local out = {}
+    for _, k in ipairs(Fall.SAVE) do out[k] = Fall[k] end
+    return out
+end
+
+function Fall.loadData(d)
+    if type(d) ~= "table" then return end
+    for _, k in ipairs(Fall.SAVE) do
+        if d[k] ~= nil and type(d[k]) == type(Fall[k]) then Fall[k] = d[k] end
+    end
+    Fall.mph      = math.clamp(Fall.mph, 0, 200)
+    Fall.rise     = math.clamp(Fall.rise, 0, 300)
+    Fall.tilt     = math.clamp(Fall.tilt, -30, 60)
+    Fall.windAmt  = math.clamp(Fall.windAmt, 0, 1)
+    Fall.arrowAmt = math.clamp(Fall.arrowAmt, 0, 1)
+    Fall.swayAmt  = math.clamp(Fall.swayAmt, 0, 1)
+    Fall.shakeAmt = math.clamp(Fall.shakeAmt, 0, 1)
+    Fall.anim     = Fall.anim:gsub("%D", "")
+    if Fall.face ~= "KEEP" and Fall.face ~= "SCREEN" and Fall.face ~= "THEM" then Fall.face = "KEEP" end
+    if Fall.match ~= "HEIGHT" and Fall.match ~= "SPEED" then Fall.match = "HEIGHT" end
+    if Fall.key == "" then Fall.key = "T" end
+end
+
+-- ============================================================
 --  POSE HOLD
 --  When you let go of a short pose, it stays frozen on its final
 --  frame for Hold.duration seconds instead of dropping back to
@@ -6401,10 +7165,10 @@ local TOUR = {
             .. "your cuts instead of the normal binds.",
     },
     {
-        tab = "🎬 MAKER", title = "4  ·  EVERYTHING ELSE",
-        body = "MAKER builds animation sequences and song sections. PREVIEW shows your character "
-            .. "live. FAVES and LIST store animations you like. FX has the music player and visual "
-            .. "extras. Press ` any time for a list of every keybind.",
+        tab = "💨 FALL", title = "4  ·  EVERYTHING ELSE",
+        body = "FLY and FALL take your singing into the air: fly around, or fall through the sky "
+            .. "with the wind rushing past. FX has the music player and visual extras. "
+            .. "Press ` any time for a list of every keybind.",
     },
     {
         tab = "⚙ SETTINGS", title = "5  ·  SETTINGS",
@@ -7192,6 +7956,7 @@ function Result.lose()
     -- anything of ours that pins your body has to let go first
     if Ride.enabled then Ride.unlock("lost the battle") end
     if Fly.enabled then Fly.stop("lost the battle") end
+    if Fall.on then Fall.stop("lost the battle") end
     root.Anchored = false
 
     -- sitting pose
@@ -7303,6 +8068,8 @@ function F.notePress(row, copied)
         elseif not copied then
             Air.onPress(row.dir)
         end
+    elseif Fall.on then
+        Fall.onPose(row.dir)               -- copied too: their arrows budge you as well
     else
         F.triggerRPMovement()
         if spacing then spacing:OnSingStart(character) end
@@ -9025,7 +9792,7 @@ end
 --  it stops at walls and sits out while you fly.
 -- ============================================================
 function Tug.roots()
-    if not rpModeEnabled or not currentTarget or Fly.enabled then return nil, nil end
+    if not rpModeEnabled or not currentTarget or Fly.enabled or Fall.on then return nil, nil end
     local me = character and character:FindFirstChild("HumanoidRootPart")
     local tc = currentTarget.Character
     local them = tc and tc:FindFirstChild("HumanoidRootPart")
@@ -10223,7 +10990,7 @@ end
 -- On when switched on, and during a song when solo mode shows them
 -- (including its results card).
 function Chars.wanted()
-    return Chars.enabled
+    return false     -- the STAGE tab was removed in v7.2.6
 end
 
 -- Build or remove the stage to match what is wanted. Returns false when it
@@ -11401,6 +12168,9 @@ function F.onInput(input, gameProcessed)
         -- Fly keybind
         if kn == Fly.key then Fly.toggle() end
 
+        -- Fall keybind
+        if kn == Fall.key then Fall.toggle() end
+
         -- Boss battle cutscene keybind
         if kn == Boss.key then Boss.toggle() end
 
@@ -11412,9 +12182,6 @@ function F.onInput(input, gameProcessed)
         -- Win / lose
         if kn == Result.winKey then Result.win()
         elseif kn == Result.loseKey then Result.lose() end
-
-        -- Black screen fade
-        if kn == Vid.boKey then Vid.blackout() end
 
         -- Hold streaks on/off
         if kn == Notes.key then Notes.setEnabled(not Notes.enabled) end
@@ -11548,6 +12315,7 @@ function F.setupCharacter(char)
     if Boss.active then Boss.exit() end
     if Ride.enabled then Ride.unlock("respawned") end
     if Fly.enabled then Fly.stop("you respawned") end
+    if Fall.on then Fall.stop("you respawned") end
     Result.token = Result.token + 1
     Result.winTrack, Result.sitTrack = nil, nil
     if Vid.stage.on then task.delay(0.5, function() pcall(Vid.stageRefresh) end) end
@@ -13182,127 +13950,6 @@ function F.buildTab_Arms(pages)
         slider(y, r.label, r.min, r.max, function() return Arms[key] end, function(v) Arms[key] = v end, r.fmt)
         y = y + 42
     end
-end
-
--- ============================================================
---  STAGE TAB — Boyfriend, Girlfriend and the opponent
--- ============================================================
-function F.buildTab_Stage(pages)
-    local pg = pages["🎭 STAGE"]
-    if not pg then return end
-
-    local title = F.makeLabel(pg, "STAGE: BF, GF & OPPONENT", UDim2.new(0,8,0,6), UDim2.new(1,-16,0,20),
-        Color3.fromRGB(255,110,230), Enum.TextXAlignment.Left, 12)
-    title.Font = Enum.Font.GothamBold
-    F.makeLabel(pg, "The game's own characters, animated: GF sways to the beat, BF sings what you press and the opponent sings when your RP opponent poses. On screen, or standing in the game where only you can see them.",
-        UDim2.new(0,8,0,26), UDim2.new(1,-16,0,40), Color3.fromRGB(130,130,150), Enum.TextXAlignment.Left, 9).TextWrapped = true
-
-    local oY = 70
-    local toggles = {
-        { tbl = Chars,  key = "enabled",   on = "STAGE: ON",       off = "STAGE: OFF" },
-        { tbl = Chars,  key = "showOpp",   on = "OPPONENT: ON",    off = "OPPONENT: OFF" },
-        { tbl = Arrows, key = "oppShow",   on = "OPP ARROWS: ON",  off = "OPP ARROWS: OFF" },
-        { tbl = Chars,  key = "follow",    on = "FOLLOWS ME: ON",  off = "FOLLOWS ME: OFF" },
-        { tbl = Chars,  key = "draggable", on = "DRAG STAGE: ON",  off = "DRAG STAGE: OFF" },
-    }
-    for i, t in ipairs(toggles) do
-        local col = (i - 1) % 3
-        local rowN = math.floor((i - 1) / 3)
-        local b = F.makeBtn(pg, t.tbl[t.key] and t.on or t.off,
-            UDim2.new(0, 8 + col * 132, 0, oY + rowN * 32), UDim2.new(0, 126, 0, 26),
-            t.tbl[t.key] and Color3.fromRGB(60,190,120) or Color3.fromRGB(35,35,55), nil, 9)
-        b.MouseButton1Click:Connect(function()
-            t.tbl[t.key] = not t.tbl[t.key]
-            b.Text = t.tbl[t.key] and t.on or t.off
-            b.BackgroundColor3 = t.tbl[t.key] and Color3.fromRGB(60,190,120) or Color3.fromRGB(35,35,55)
-            if t.key == "enabled" or t.key == "showOpp" then
-                if not Chars.refresh(true) then
-                    F.notify("No BF / GF frames in workspace/FNFInjector/sprites. Run tools/make_fnf_characters.py.", "warn")
-                end
-            end
-            if t.key == "oppShow" then F.refreshOppStrip() end
-        end)
-    end
-
-    -- where the stage is: drawn over your screen, or standing in the game
-    local sY = oY + math.ceil(#toggles / 3) * 32 + 4
-    local modeBtn = F.makeBtn(pg, "", UDim2.new(0,8,0,sY), UDim2.new(0,190,0,28),
-        Color3.fromRGB(70,120,255), nil, 10)
-    local placeBtn = F.makeBtn(pg, "PLACE STAGE HERE", UDim2.new(0,206,0,sY), UDim2.new(0,190,0,28),
-        Color3.fromRGB(35,35,55), nil, 10)
-    local function paintMode()
-        modeBtn.Text = (Chars.mode == "WORLD") and "STAGE: IN THE GAME" or "STAGE: ON SCREEN"
-    end
-    paintMode()
-    modeBtn.MouseButton1Click:Connect(function()
-        Chars.mode = (Chars.mode == "WORLD") and "SCREEN" or "WORLD"
-        paintMode()
-        if Chars.wanted() then
-            if not Chars.refresh(true) then
-                F.notify("No BF / GF frames in workspace/FNFInjector/sprites. Run tools/make_fnf_characters.py.", "warn")
-            end
-        else
-            F.notify("Turn the STAGE on to see them", "info")
-        end
-        if Chars.mode == "WORLD" then
-            F.notify("In the game: they stand around where you are. Only you can see them.", "info")
-        end
-    end)
-    placeBtn.MouseButton1Click:Connect(function()
-        Chars.anchor = Chars.anchorFromMe()
-        if Chars.world then Chars.placeWorld(false) end
-        F.notify((Chars.mode == "WORLD") and "Stage moved to where you're standing"
-            or "Set the stage to IN THE GAME first, then place it", "info")
-    end)
-
-    F.makeLabel(pg, "OPPONENT", UDim2.new(0,8,0,sY+34), UDim2.new(0,150,0,26),
-        Color3.fromRGB(160,160,160), Enum.TextXAlignment.Left, 10)
-    local oppBox = F.makeBox(pg, UDim2.new(0,160,0,sY+34), UDim2.new(1,-168,0,26),
-        "dad, spooky, pico, tankman, tricky ...", Chars.freeOpp)
-    oppBox.FocusLost:Connect(function()
-        local id = string.gsub(oppBox.Text or "", "%s", "")
-        if id == "" then id = "dad" end
-        if not Chars.info(id) then
-            F.notify("No baked character called \"" .. id .. "\". Names match the folders in sprites/chars.", "warn")
-            oppBox.Text = Chars.freeOpp
-            return
-        end
-        Chars.freeOpp = id
-        oppBox.Text = id
-        pcall(Chars.refresh, true)
-    end)
-
-    local sliders = {
-        { label = "SIZE ON SCREEN", min = 0.4, max = 1.8, get = function() return Chars.scale end,
-          set = function(v)
-              Chars.scale = v
-              if Chars.gui then pcall(Chars.refresh, true) end
-          end },
-        { label = "SIZE IN THE GAME", min = 0.4, max = 3, get = function() return Chars.worldScale end,
-          set = function(v)
-              Chars.worldScale = v
-              if Chars.world then pcall(Chars.refresh, true) end
-          end },
-    }
-    for i, sl in ipairs(sliders) do
-        local ry = sY + 34 + 32 + 8 + (i - 1) * 42
-        F.makeLabel(pg, sl.label, UDim2.new(0,8,0,ry), UDim2.new(0,280,0,18),
-            Color3.fromRGB(160,160,160), Enum.TextXAlignment.Left, 10)
-        local vlbl = F.makeLabel(pg, string.format("%.2fx", sl.get()), UDim2.new(0,306,0,ry), UDim2.new(0,90,0,18),
-            Color3.fromRGB(255,80,180), Enum.TextXAlignment.Right, 10)
-        F.regText(vlbl)
-        F.makeSlider(pg, UDim2.new(0,8,0,ry+20), UDim2.new(1,-16,0,12), sl.min, sl.max, sl.get(), function(v)
-            sl.set(v)
-            vlbl.Text = string.format("%.2fx", v)
-        end)
-    end
-
-    local count = 0
-    for _ in pairs(Chars.load() or {}) do count = count + 1 end
-    F.makeLabel(pg, count > 0 and string.format("%d characters baked. New mods? Run tools/make_fnf_characters.py again.", count)
-            or "No characters baked yet: run tools/make_fnf_characters.py.",
-        UDim2.new(0,8,0,sY + 34 + 32 + 8 + #sliders * 42 + 4), UDim2.new(1,-16,0,30),
-        Color3.fromRGB(120,120,140), Enum.TextXAlignment.Left, 9).TextWrapped = true
 end
 
 function F.buildTab_Binds(pages)
@@ -16440,444 +17087,279 @@ function F.buildAirSection(pg, y)
     Air.refreshUI()
 end
 
-function F.buildTab_Maker(pages)
-    local pg2 = pages["🎬 MAKER"]
+-- ============================================================
+-- ── FALL TAB ──
+-- ============================================================
+-- SYNC WITH: a player search, like FLY WITH. Who you pick, you fall with.
+function F.buildFallSync(pg, y)
+    local C = Color3.fromRGB
+    F.makeDivider(pg, y, C(150,200,255)); y = y + 6
+    local title = F.makeLabel(pg, "SYNC WITH", UDim2.new(0,8,0,y), UDim2.new(1,-16,0,20), C(150,200,255), Enum.TextXAlignment.Left, 12)
+    title.Font = Enum.Font.GothamBold
+    y = y + 24
+    local help = F.makeLabel(pg, "Search for your opponent (or anyone) to fall together. THEIR HEIGHT: you stay level with them and keep your spacing (going up to them is 40 studs/s at most), and you land when you reach the ground. THEIR SPEED: you fall exactly as fast as they do (200 mph at most), at your own height.",
+        UDim2.new(0,8,0,y), UDim2.new(1,-16,0,52), C(130,130,150), Enum.TextXAlignment.Left, 9)
+    help.TextWrapped = true
+    help.TextYAlignment = Enum.TextYAlignment.Top
+    y = y + 56
 
-    local makerTitle = F.makeLabel(pg2, "🎬 ANIMATION SEQUENCE MAKER",
-        UDim2.new(0,8,0,6), UDim2.new(1,-16,0,20),
-        Color3.fromRGB(255,80,180), Enum.TextXAlignment.Left, 12)
-    F.regText(makerTitle)
-    F.makeDivider(pg2, 28, Color3.fromRGB(0,200,255))
-    F.makeLabel(pg2, "ANIM ID",   UDim2.new(0,8,0,34),   UDim2.new(0,220,0,16), Color3.fromRGB(160,160,160))
-    F.makeLabel(pg2, "DELAY (s)", UDim2.new(0,232,0,34), UDim2.new(0,80,0,16),  Color3.fromRGB(160,160,160))
-
-    local seqScroll = Instance.new("ScrollingFrame")
-    seqScroll.Size = UDim2.new(1,-16,0,182); seqScroll.Position = UDim2.new(0,8,0,52)
-    seqScroll.BackgroundColor3 = Color3.fromRGB(18,18,26); seqScroll.BorderSizePixel = 0
-    seqScroll.ScrollBarThickness = 4; seqScroll.CanvasSize = UDim2.new(0,0,0,0)
-    seqScroll.Parent = pg2; F.uiCorner(seqScroll)
-
-    local seqLayout = Instance.new("UIListLayout")
-    seqLayout.SortOrder = Enum.SortOrder.LayoutOrder; seqLayout.Padding = UDim.new(0,4)
-    seqLayout.Parent = seqScroll
-    local seqPad = Instance.new("UIPadding")
-    seqPad.PaddingTop = UDim.new(0,4); seqPad.PaddingLeft = UDim.new(0,4); seqPad.PaddingRight = UDim.new(0,4)
-    seqPad.Parent = seqScroll
-
-    local function updateCanvas()
-        seqScroll.CanvasSize = UDim2.new(0,0,0, seqLayout.AbsoluteContentSize.Y + 10)
+    local hBtn = F.makeBtn(pg, "MATCH THEIR HEIGHT", UDim2.new(0,8,0,y), UDim2.new(0,190,0,28), C(35,35,55), nil, 10)
+    local sBtn = F.makeBtn(pg, "MATCH THEIR SPEED", UDim2.new(0,206,0,y), UDim2.new(0,190,0,28), C(35,35,55), nil, 10)
+    local function paintMatch()
+        hBtn.BackgroundColor3 = (Fall.match ~= "SPEED") and C(90,140,255) or C(35,35,55)
+        sBtn.BackgroundColor3 = (Fall.match == "SPEED") and C(90,140,255) or C(35,35,55)
     end
-    seqLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(updateCanvas)
+    paintMatch()
+    hBtn.MouseButton1Click:Connect(function() Fall.match = "HEIGHT"; Fall.syncOff = nil; paintMatch() end)
+    sBtn.MouseButton1Click:Connect(function() Fall.match = "SPEED"; paintMatch() end)
+    y = y + 34
 
-    local seqStatusLbl = F.makeLabel(pg2, "● IDLE",
-        UDim2.new(0,8,0,310), UDim2.new(1,-16,0,18), Color3.fromRGB(160,80,80), Enum.TextXAlignment.Left)
+    local search = F.makeBox(pg, UDim2.new(0,8,0,y), UDim2.new(1,-118,0,28), "search players (name or display name)")
+    local clearBtn = F.makeBtn(pg, "CLEAR", UDim2.new(1,-104,0,y), UDim2.new(0,96,0,28), C(170,35,35), nil, 10)
+    y = y + 34
 
-    local function addSeqRow(id, delay)
-        local step = { id = id or "", delay = delay or 0.5 }
-        table.insert(sequence, step)
+    local list = Instance.new("ScrollingFrame")
+    list.Size = UDim2.new(1,-16,0,110); list.Position = UDim2.new(0,8,0,y)
+    list.BackgroundColor3 = C(18,18,26); list.BackgroundTransparency = 0.2
+    list.BorderSizePixel = 0; list.ScrollBarThickness = 3
+    list.CanvasSize = UDim2.new(0,0,0,0); list.AutomaticCanvasSize = Enum.AutomaticSize.Y
+    list.Parent = pg
+    F.uiCorner(list)
+    local lay = Instance.new("UIListLayout")
+    lay.Padding = UDim.new(0,3); lay.SortOrder = Enum.SortOrder.LayoutOrder; lay.Parent = list
+    local pad = Instance.new("UIPadding")
+    pad.PaddingTop = UDim.new(0,4); pad.PaddingLeft = UDim.new(0,4); pad.PaddingRight = UDim.new(0,4)
+    pad.Parent = list
+    y = y + 116
 
-        local row = Instance.new("Frame")
-        row.Size = UDim2.new(1,-8,0,30); row.BackgroundColor3 = Color3.fromRGB(24,24,36)
-        row.BorderSizePixel = 0; row.LayoutOrder = #sequence; row.Parent = seqScroll
-        F.uiCorner(row, UDim.new(0,6))
+    local whoLbl = F.makeLabel(pg, "", UDim2.new(0,8,0,y), UDim2.new(1,-16,0,28), C(160,160,180), Enum.TextXAlignment.Left, 9)
+    whoLbl.TextWrapped = true
+    whoLbl.TextYAlignment = Enum.TextYAlignment.Top
+    y = y + 32
 
-        local idIn = F.makeBox(row, UDim2.new(0,4,0,3), UDim2.new(0,206,0,24), "Animation ID", step.id)
-        idIn.FocusLost:Connect(function() step.id = idIn.Text:gsub("%D","") end)
-
-        local dlIn = F.makeBox(row, UDim2.new(0,216,0,3), UDim2.new(0,64,0,24), "0.5", tostring(step.delay))
-        dlIn.FocusLost:Connect(function() step.delay = tonumber(dlIn.Text) or 0.5 end)
-
-        local rem = F.makeBtn(row, "✕", UDim2.new(0,286,0,3), UDim2.new(0,28,0,24), Color3.fromRGB(170,35,35), nil, 12)
-        rem.MouseButton1Click:Connect(function()
-            for j, s in ipairs(sequence) do if s == step then table.remove(sequence, j); break end end
-            for j, r in ipairs(seqRowFrames) do if r == row then table.remove(seqRowFrames, j); break end end
-            row:Destroy(); updateCanvas()
-        end)
-
-        table.insert(seqRowFrames, row); updateCanvas()
-    end
-
-    F.makeBtn(pg2, "+ ADD STEP", UDim2.new(0,8,0,240), UDim2.new(1,-16,0,26), Color3.fromRGB(35,35,55))
-        .MouseButton1Click:Connect(function() addSeqRow("", 0.5) end)
-
-    local seqPlay  = F.makeBtn(pg2, "▶ PLAY SEQUENCE", UDim2.new(0,8,0,272),   UDim2.new(0,176,0,30), Color3.fromRGB(60,190,120))
-    local seqStop  = F.makeBtn(pg2, "■ STOP",          UDim2.new(0,192,0,272), UDim2.new(0,90,0,30),  Color3.fromRGB(190,50,50))
-    local seqClear = F.makeBtn(pg2, "🗑 CLEAR",         UDim2.new(0,290,0,272), UDim2.new(0,106,0,30), Color3.fromRGB(70,25,70))
-
-    seqPlay.MouseButton1Click:Connect(function()
-        if #sequence == 0 then seqStatusLbl.Text = "⚠ Add steps first"; F.notify("Add a step first", "warn"); return end
-        F.playSequence()
-        seqStatusLbl.Text = "▶ RUNNING"; seqStatusLbl.TextColor3 = Color3.fromRGB(80,220,120)
-        F.notify("Sequence started", "info")
-        task.spawn(function()
-            while seqPlaying do task.wait(0.1) end
-            seqStatusLbl.Text = "● IDLE"; seqStatusLbl.TextColor3 = Color3.fromRGB(160,80,80)
-        end)
-    end)
-    seqStop.MouseButton1Click:Connect(function()
-        F.stopSequence(); seqStatusLbl.Text = "● IDLE"; seqStatusLbl.TextColor3 = Color3.fromRGB(160,80,80)
-    end)
-    seqClear.MouseButton1Click:Connect(function()
-        F.stopSequence(); sequence = {}
-        for _, r in ipairs(seqRowFrames) do pcall(function() r:Destroy() end) end
-        seqRowFrames = {}; updateCanvas()
-        seqStatusLbl.Text = "● IDLE"; seqStatusLbl.TextColor3 = Color3.fromRGB(160,80,80)
-    end)
-
-    F.makeDivider(pg2, 330, Color3.fromRGB(0,200,255))
-    F.makeLabel(pg2, "🎵 SONG SECTIONS", UDim2.new(0,8,0,336), UDim2.new(1,-16,0,18), Color3.fromRGB(255,80,180), Enum.TextXAlignment.Left, 12)
-    F.makeLabel(pg2, "Each section holds 4 animation IDs. Switch sections live with [ and ] keys.",
-        UDim2.new(0,8,0,354), UDim2.new(1,-16,0,16), Color3.fromRGB(130,130,150), Enum.TextXAlignment.Left, 9)
-
-    local secCurrentLbl = F.makeLabel(pg2, "§ " .. (sections[currentSectionIdx] and sections[currentSectionIdx].name or "—"),
-        UDim2.new(0,8,0,376), UDim2.new(1,-16,0,20), Color3.fromRGB(255,200,60), Enum.TextXAlignment.Left, 12)
-
-    F.makeLabel(pg2, "PREV", UDim2.new(0,8,0,400), UDim2.new(0,36,0,24), Color3.fromRGB(160,160,160), Enum.TextXAlignment.Left, 9)
-    local secPrevKeyBtn = F.makeBtn(pg2, sectionPrevKey, UDim2.new(0,46,0,400), UDim2.new(0,70,0,24), Color3.fromRGB(25,35,48), nil, 9)
-    secPrevKeyBtn.MouseButton1Click:Connect(function()
-        secPrevKeyBtn.Text = "..."; secPrevKeyBtn.BackgroundColor3 = Color3.fromRGB(0,200,255)
-        local conn; conn = F.own(UserInputService.InputBegan:Connect(function(inp)
-            if inp.KeyCode and inp.KeyCode.Name ~= "Unknown" and not inp.KeyCode.Name:match("Mouse") then
-                sectionPrevKey = inp.KeyCode.Name; secPrevKeyBtn.Text = sectionPrevKey
-                secPrevKeyBtn.BackgroundColor3 = Color3.fromRGB(25,35,48); conn:Disconnect()
-            end
-        end))
-    end)
-    F.makeLabel(pg2, "NEXT", UDim2.new(0,124,0,400), UDim2.new(0,36,0,24), Color3.fromRGB(160,160,160), Enum.TextXAlignment.Left, 9)
-    local secNextKeyBtn = F.makeBtn(pg2, sectionNextKey, UDim2.new(0,162,0,400), UDim2.new(0,70,0,24), Color3.fromRGB(25,35,48), nil, 9)
-    secNextKeyBtn.MouseButton1Click:Connect(function()
-        secNextKeyBtn.Text = "..."; secNextKeyBtn.BackgroundColor3 = Color3.fromRGB(0,200,255)
-        local conn; conn = F.own(UserInputService.InputBegan:Connect(function(inp)
-            if inp.KeyCode and inp.KeyCode.Name ~= "Unknown" and not inp.KeyCode.Name:match("Mouse") then
-                sectionNextKey = inp.KeyCode.Name; secNextKeyBtn.Text = sectionNextKey
-                secNextKeyBtn.BackgroundColor3 = Color3.fromRGB(25,35,48); conn:Disconnect()
-            end
-        end))
-    end)
-
-    local secScroll = Instance.new("ScrollingFrame")
-    secScroll.Size = UDim2.new(1,-16,0,320); secScroll.Position = UDim2.new(0,8,0,430)
-    secScroll.BackgroundColor3 = Color3.fromRGB(18,18,26); secScroll.BackgroundTransparency = 0.5
-    secScroll.BorderSizePixel = 0; secScroll.ScrollBarThickness = 3
-    secScroll.CanvasSize = UDim2.new(0,0,0,0); secScroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
-    secScroll.Parent = pg2; F.uiCorner(secScroll, UDim.new(0,8))
-    local secLayout = Instance.new("UIListLayout")
-    secLayout.Padding = UDim.new(0,6); secLayout.Parent = secScroll
-    local secPad = Instance.new("UIPadding")
-    secPad.PaddingTop = UDim.new(0,4); secPad.PaddingLeft = UDim.new(0,4); secPad.PaddingRight = UDim.new(0,4)
-    secPad.Parent = secScroll
-
-    local function buildSectionsUI()
-        for _, c in ipairs(secScroll:GetChildren()) do
-            if c:IsA("Frame") then c:Destroy() end
+    local function fill()
+        if not list.Parent then return end
+        for _, c in ipairs(list:GetChildren()) do
+            if c:IsA("GuiObject") then c:Destroy() end
         end
-        for idx, sec in ipairs(sections) do
-            local isActive = (idx == currentSectionIdx)
-            local card = Instance.new("Frame")
-            card.Size = UDim2.new(1,-4,0,120); card.BackgroundColor3 = isActive and Color3.fromRGB(40,25,55) or Color3.fromRGB(22,22,32)
-            card.BackgroundTransparency = 0.3; card.BorderSizePixel = 0; card.LayoutOrder = idx
-            card.Parent = secScroll; F.uiCorner(card, UDim.new(0,8))
-            if isActive then F.uiStroke(card, Color3.fromRGB(255,200,60), 1.5) end
-
-            local nameBox = F.makeBox(card, UDim2.new(0,4,0,4), UDim2.new(0,140,0,22), "Name", sec.name)
-            nameBox.Font = Enum.Font.GothamBold; nameBox.TextSize = 11
-            nameBox.FocusLost:Connect(function()
-                if nameBox.Text ~= "" then sec.name = nameBox.Text end
-            end)
-
-            local loadBtn = F.makeBtn(card, "▶ LOAD", UDim2.new(0,150,0,4), UDim2.new(0,60,0,22), Color3.fromRGB(60,190,120), nil, 9)
-            loadBtn.MouseButton1Click:Connect(function()
-                currentSectionIdx = idx
-                for _, row in ipairs(CurrentBindings) do
-                    local newId = sec.ids[row.dir]
-                    if newId and newId ~= "0" and newId ~= "" then
-                        row.id = newId; F.destroyTrack(row.key)
-                    end
-                end
-                F.notify("§ Loaded: " .. sec.name, "success")
-                buildSectionsUI()
-                secCurrentLbl.Text = "§ " .. sec.name
-            end)
-
-            local saveBtn = F.makeBtn(card, "💾 SAVE", UDim2.new(0,216,0,4), UDim2.new(0,60,0,22), Color3.fromRGB(70,120,255), nil, 9)
-            saveBtn.MouseButton1Click:Connect(function()
-                for _, row in ipairs(CurrentBindings) do
-                    sec.ids[row.dir] = row.id
-                end
-                F.notify("Saved current binds to § " .. sec.name, "success")
-            end)
-
-            local delBtn = F.makeBtn(card, "✕", UDim2.new(0,282,0,4), UDim2.new(0,24,0,22), Color3.fromRGB(170,35,35), nil, 10)
-            delBtn.MouseButton1Click:Connect(function()
-                if #sections <= 1 then F.notify("Need at least one section", "warn"); return end
-                table.remove(sections, idx)
-                if currentSectionIdx > #sections then currentSectionIdx = #sections end
-                buildSectionsUI()
-            end)
-
-            local dirOrder = { "LEFT", "DOWN", "UP", "RIGHT" }
-            for di, dir in ipairs(dirOrder) do
-                local dy = 30 + (di-1) * 22
-                local col = ARROW_COLORS[dir] and ARROW_COLORS[dir].hit or Color3.fromRGB(255,255,255)
-                F.makeLabel(card, dir, UDim2.new(0,6,0,dy), UDim2.new(0,42,0,20), col, Enum.TextXAlignment.Left, 9)
-                local idBox = F.makeBox(card, UDim2.new(0,50,0,dy), UDim2.new(1,-58,0,20), "anim ID", sec.ids[dir] ~= "0" and sec.ids[dir] or "")
-                idBox.TextSize = 9
-                local capturedDir = dir
-                idBox.FocusLost:Connect(function()
-                    local cleaned = idBox.Text:gsub("%D","")
-                    sec.ids[capturedDir] = cleaned ~= "" and cleaned or "0"
-                end)
+        local q = (search.Text or ""):lower()
+        local rows = {}
+        for _, p in ipairs(Players:GetPlayers()) do
+            if p ~= LocalPlayer and (q == "" or p.Name:lower():find(q, 1, true)
+                or p.DisplayName:lower():find(q, 1, true)) then
+                table.insert(rows, p)
             end
         end
+        table.sort(rows, function(a, b) return a.DisplayName:lower() < b.DisplayName:lower() end)
+        if #rows == 0 then
+            F.makeLabel(list, (q == "") and "Nobody else here" or "No player matches", UDim2.new(0,0,0,0),
+                UDim2.new(1,-8,0,22), C(130,130,150), Enum.TextXAlignment.Left, 9)
+        end
+        for i, p in ipairs(rows) do
+            local b = F.makeBtn(list, string.format("%s (@%s)", p.DisplayName, p.Name), UDim2.new(0,0,0,0),
+                UDim2.new(1,-8,0,24), (p == Fall.syncPlr) and C(90,140,255) or C(30,28,44), nil, 9)
+            b.TextXAlignment = Enum.TextXAlignment.Left
+            b.LayoutOrder = i
+            b.MouseButton1Click:Connect(function() Fall.pickSync(p) end)
+        end
+        local p = Fall.syncPlr
+        if p then
+            whoLbl.Text = "falling with " .. p.DisplayName .. " (@" .. p.Name .. ")"
+                .. ((Fall.match == "SPEED") and ": as fast as they fall" or ": level with them")
+            whoLbl.TextColor3 = C(150,200,255)
+        else
+            whoLbl.Text = "nobody picked: you fall at your own FALL SPEED"
+            whoLbl.TextColor3 = C(130,130,150)
+        end
     end
+    Fall.refreshSync = fill
+    hBtn.MouseButton1Click:Connect(fill)
+    sBtn.MouseButton1Click:Connect(fill)
 
-    F.refreshSectionsUI = function()
-        secCurrentLbl.Text = "§ " .. (sections[currentSectionIdx] and sections[currentSectionIdx].name or "—")
-        buildSectionsUI()
-    end
-
-    local addSecBtn = F.makeBtn(pg2, "+ NEW SECTION", UDim2.new(0,8,0,756), UDim2.new(1,-16,0,28), Color3.fromRGB(35,35,55), nil, 11)
-    addSecBtn.MouseButton1Click:Connect(function()
-        local newIds = {}
-        for _, row in ipairs(CurrentBindings) do newIds[row.dir] = row.id end
-        table.insert(sections, { name = "Section " .. (#sections + 1), ids = newIds })
-        buildSectionsUI()
-        F.notify("Added new section", "success")
+    search:GetPropertyChangedSignal("Text"):Connect(fill)
+    clearBtn.MouseButton1Click:Connect(function()
+        search.Text = ""
+        Fall.pickSync(nil)
     end)
-
-    local dupSecBtn = F.makeBtn(pg2, "📋 DUPLICATE CURRENT", UDim2.new(0,8,0,790), UDim2.new(1,-16,0,28), Color3.fromRGB(70,120,255), nil, 11)
-    dupSecBtn.MouseButton1Click:Connect(function()
-        local src = sections[currentSectionIdx]
-        if not src then return end
-        local copy = { name = src.name .. " (copy)", ids = {} }
-        for dir, id in pairs(src.ids) do copy.ids[dir] = id end
-        table.insert(sections, currentSectionIdx + 1, copy)
-        buildSectionsUI()
-        F.notify("Duplicated § " .. src.name, "success")
-    end)
-
-    buildSectionsUI()
+    F.own(Players.PlayerAdded:Connect(function() task.defer(fill) end))
+    F.own(Players.PlayerRemoving:Connect(function(p)
+        if p == Fall.syncPlr then
+            F.notify(p.DisplayName .. " left — nobody picked in SYNC WITH now", "info")
+            Fall.pickSync(nil)
+        end
+        task.defer(fill)
+    end))
+    fill()
+    return y
 end
 
-function F.buildTab_Preview(pages)
-    local pg3v = pages["👁 PREVIEW"]
+function F.buildTab_Fall(pages)
+    local pg = pages["💨 FALL"]
+    if not pg then return end
+    local C = Color3.fromRGB
+    local y = 8
 
-    local pvTitle = F.makeLabel(pg3v, "👁 LIVE CHARACTER PREVIEW", UDim2.new(0,8,0,6), UDim2.new(1,-16,0,20), Color3.fromRGB(255,80,180), Enum.TextXAlignment.Left, 12)
-    F.regText(pvTitle)
-    F.makeDivider(pg3v, 28, Color3.fromRGB(0,200,255))
+    local title = F.makeLabel(pg, "FALL", UDim2.new(0,8,0,y), UDim2.new(1,-16,0,20), C(150,200,255), Enum.TextXAlignment.Left, 13)
+    title.Font = Enum.Font.GothamBold
+    y = y + 22
+    local intro = F.makeLabel(pg, "For when you get ejected, or any fall through the air: sing the whole way down. The wind rushes past, your arrows sway and budge when you pose, your body sways, and the camera shakes.",
+        UDim2.new(0,8,0,y), UDim2.new(1,-16,0,40), C(130,130,150), Enum.TextXAlignment.Left, 9)
+    intro.TextWrapped = true
+    intro.TextYAlignment = Enum.TextYAlignment.Top
+    y = y + 44
 
-    local viewport = Instance.new("ViewportFrame")
-    viewport.Size = UDim2.new(1,-16,0,260); viewport.Position = UDim2.new(0,8,0,36)
-    viewport.BackgroundColor3 = Color3.fromRGB(10,10,16)
-    viewport.Ambient = Color3.fromRGB(140,140,150)
-    viewport.LightColor = Color3.fromRGB(255,255,255)
-    viewport.LightDirection = Vector3.new(-0.6, -1, -0.4)
-    viewport.Parent = pg3v
-    F.uiCorner(viewport)
-    local vpStroke = F.uiStroke(viewport, Color3.fromRGB(255,80,180), 2)
-    F.regStroke(vpStroke)
+    local fallBtn = F.makeBtn(pg, "", UDim2.new(0,8,0,y), UDim2.new(0,250,0,32), C(35,35,55), nil, 11)
+    fallBtn.MouseButton1Click:Connect(function() Fall.toggle() end)
+    F.makeLabel(pg, "KEY", UDim2.new(0,266,0,y), UDim2.new(0,30,0,32), C(160,160,160), Enum.TextXAlignment.Left, 10)
+    local keyBtn = F.makeBtn(pg, Fall.key, UDim2.new(0,298,0,y), UDim2.new(0,98,0,32), C(25,35,48), nil, 10)
+    keyBtn.MouseButton1Click:Connect(function()
+        keyBtn.Text = "..."
+        keyBtn.BackgroundColor3 = C(0,200,255)
+        local conn
+        conn = F.own(UserInputService.InputBegan:Connect(function(inp)
+            if inp.KeyCode and inp.KeyCode.Name ~= "Unknown" and not inp.KeyCode.Name:match("Mouse") then
+                Fall.key = inp.KeyCode.Name
+                keyBtn.Text = Fall.key
+                keyBtn.BackgroundColor3 = C(25,35,48)
+                if Keys.refresh then Keys.refresh() end
+                conn:Disconnect()
+            end
+        end))
+    end)
+    Fall.refreshUI = function()
+        if not fallBtn.Parent then return end
+        fallBtn.Text = Fall.on and "FALLING — STOP" or "START FALL"
+        fallBtn.BackgroundColor3 = Fall.on and C(90,140,255) or C(35,35,55)
+    end
+    Fall.refreshUI()
+    y = y + 38
 
-    previewCloneContainer = Instance.new("WorldModel")
-    previewCloneContainer.Parent = viewport
-
-    previewCam = Instance.new("Camera")
-    previewCam.FieldOfView = 60
-    previewCam.CFrame = CFrame.new(Vector3.new(0, 3, 6), Vector3.new(0, 3, 0))
-    viewport.CurrentCamera = previewCam
-    previewCam.Parent = viewport
-
+    local status = F.makeLabel(pg, "", UDim2.new(0,8,0,y), UDim2.new(1,-16,0,30), C(160,160,180), Enum.TextXAlignment.Left, 9)
+    status.TextWrapped = true
+    status.TextYAlignment = Enum.TextYAlignment.Top
     task.spawn(function()
         while F.alive do
-            RunService.Heartbeat:Wait()
-            if previewCam then
-                previewAngle = previewAngle + 0.3
-                local rad = math.rad(previewAngle)
-                local dist = 6
-                local pos = Vector3.new(math.sin(rad) * dist, 4, math.cos(rad) * dist)
-                previewCam.CFrame = CFrame.new(pos, Vector3.new(0, 3, 0))
+            task.wait(0.25)
+            if not status.Parent then break end
+            local text, on = Fall.statusText()
+            status.Text = text
+            status.TextColor3 = on and C(150,200,255) or C(130,130,150)
+        end
+    end)
+    y = y + 34
+
+    local function slider(key, label, minV, maxV, show)
+        F.makeLabel(pg, label, UDim2.new(0,8,0,y), UDim2.new(0,230,0,18), C(160,160,160), Enum.TextXAlignment.Left, 10)
+        local vlbl = F.makeLabel(pg, show(Fall[key]), UDim2.new(0,236,0,y), UDim2.new(0,160,0,18),
+            C(255,80,180), Enum.TextXAlignment.Right, 10)
+        F.regText(vlbl)
+        F.makeSlider(pg, UDim2.new(0,8,0,y+20), UDim2.new(1,-16,0,12), minV, maxV, Fall[key], function(val)
+            Fall[key] = val
+            vlbl.Text = show(val)
+        end)
+        y = y + 44
+    end
+    local function toggle(x, w, key, onTxt, offTxt)
+        local b = F.makeBtn(pg, "", UDim2.new(0,x,0,y), UDim2.new(0,w,0,26), C(35,35,55), nil, 9)
+        local function paint()
+            b.Text = Fall[key] and onTxt or offTxt
+            b.BackgroundColor3 = Fall[key] and C(60,190,120) or C(35,35,55)
+        end
+        paint()
+        b.MouseButton1Click:Connect(function()
+            Fall[key] = not Fall[key]
+            paint()
+        end)
+    end
+    local function help(text, h)
+        local l = F.makeLabel(pg, text, UDim2.new(0,8,0,y), UDim2.new(1,-16,0,h), C(130,130,150), Enum.TextXAlignment.Left, 9)
+        l.TextWrapped = true
+        l.TextYAlignment = Enum.TextYAlignment.Top
+        y = y + h + 4
+    end
+
+    -- ---- the fall ----
+    F.makeDivider(pg, y, C(150,200,255)); y = y + 6
+    local t2 = F.makeLabel(pg, "THE FALL", UDim2.new(0,8,0,y), UDim2.new(1,-16,0,20), C(150,200,255), Enum.TextXAlignment.Left, 12)
+    t2.Font = Enum.Font.GothamBold
+    y = y + 24
+    slider("mph", "FALL SPEED", 0, 200, function(v)
+        return string.format("%d mph  (%d studs/s)", math.floor(v + 0.5), math.floor(v * Fall.MPH + 0.5))
+    end)
+    help("0 mph hangs you in the air with the wind and the sway still going, so a whole song fits. A long fall in Roblox already gets to about 200 mph. Roblox's scale: 1 stud = 28 cm.", 28)
+    slider("rise", "GO UP FIRST (studs above the ground)", 0, 300, function(v)
+        return (v < 0.5) and "off" or string.format("%d", math.floor(v + 0.5))
+    end)
+    help("Starting low? You go up this high first, at 40 studs/s, then fall. Off: you fall from where you are, like right after getting ejected.", 28)
+    slider("tilt", "LEAN BACK (degrees)", -30, 60, function(v) return string.format("%d°", math.floor(v + 0.5)) end)
+
+    local faceBtns = {}
+    for i, f in ipairs({ { "KEEP", "FACE: KEEP" }, { "SCREEN", "FACE: SCREEN" }, { "THEM", "FACE: THEM" } }) do
+        local b = F.makeBtn(pg, f[2], UDim2.new(0, 8 + (i - 1) * 130, 0, y), UDim2.new(0, 124, 0, 26), C(35,35,55), nil, 9)
+        faceBtns[f[1]] = b
+        b.MouseButton1Click:Connect(function()
+            Fall.face = f[1]
+            for k, bb in pairs(faceBtns) do
+                bb.BackgroundColor3 = (k == Fall.face) and C(90,140,255) or C(35,35,55)
             end
-        end
-    end)
-
-    F.makeLabel(pg3v, "Rotates automatically. Plays whatever anim you last triggered.",
-        UDim2.new(0,8,0,300), UDim2.new(1,-16,0,18), Color3.fromRGB(140,140,160), Enum.TextXAlignment.Left, 10)
-
-    local pvRefreshBtn = F.makeBtn(pg3v, "🔄 REFRESH CLONE", UDim2.new(0,8,0,324), UDim2.new(1,-16,0,28), Color3.fromRGB(70,120,255))
-    pvRefreshBtn.MouseButton1Click:Connect(function()
-        if character then F.buildPreviewClone(character); F.notify("Preview clone refreshed", "info") end
-    end)
-
-    F.makeDivider(pg3v, 362, Color3.fromRGB(255,80,180))
-    local pvStat1 = F.makeLabel(pg3v, "Anim: —", UDim2.new(0,8,0,370), UDim2.new(1,-16,0,16), Color3.fromRGB(210,210,220), Enum.TextXAlignment.Left, 10)
-    local pvStat2 = F.makeLabel(pg3v, "Speed: x1.00   BPM: 100   State: STOPPED", UDim2.new(0,8,0,388), UDim2.new(1,-16,0,16), Color3.fromRGB(160,160,180), Enum.TextXAlignment.Left, 10)
-    local oldRefresh = F.refreshStatusUI
-    F.refreshStatusUI = function()
-        if oldRefresh then oldRefresh() end
-        pvStat1.Text = string.format("Anim: %s (%s)", StatusState.currentAnimName, StatusState.currentAnimId ~= "" and StatusState.currentAnimId or "—")
-        pvStat2.Text = string.format("Speed: x%.2f   BPM: %d   State: %s",
-            StatusState.speedMult, StatusState.bpm, StatusState.playing and "PLAYING" or "STOPPED")
+        end)
     end
-
-    F.makeDivider(pg3v, 414, Color3.fromRGB(0,200,255))
-    local recentsTitle = F.makeLabel(pg3v, "🕐 RECENT ANIMATIONS", UDim2.new(0,8,0,420), UDim2.new(1,-16,0,18), Color3.fromRGB(255,80,180), Enum.TextXAlignment.Left, 11)
-    F.regText(recentsTitle)
-    local recentsScroll = Instance.new("ScrollingFrame")
-    recentsScroll.Size = UDim2.new(1,-16,0,120); recentsScroll.Position = UDim2.new(0,8,0,442)
-    recentsScroll.BackgroundColor3 = Color3.fromRGB(18,18,26); recentsScroll.BorderSizePixel = 0
-    recentsScroll.ScrollBarThickness = 4; recentsScroll.CanvasSize = UDim2.new(0,0,0,0)
-    recentsScroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
-    recentsScroll.Parent = pg3v; F.uiCorner(recentsScroll)
-    local recentsLayout = Instance.new("UIListLayout")
-    recentsLayout.Padding = UDim.new(0,4); recentsLayout.Parent = recentsScroll
-
-    F.refreshRecentsUI = function()
-        for _, c in ipairs(recentsScroll:GetChildren()) do
-            if c:IsA("Frame") then c:Destroy() end
-        end
-        for i, r in ipairs(recents) do
-            local row = Instance.new("Frame")
-            row.Size = UDim2.new(1,-8,0,26); row.BackgroundColor3 = Color3.fromRGB(24,24,36)
-            row.BorderSizePixel = 0; row.LayoutOrder = i; row.Parent = recentsScroll
-            F.uiCorner(row, UDim.new(0,6))
-            F.makeLabel(row, r.label.." — "..r.id, UDim2.new(0,8,0,0), UDim2.new(1,-90,1,0), Color3.fromRGB(200,200,215), Enum.TextXAlignment.Left, 10)
-            local playBtn = F.makeBtn(row, "▶", UDim2.new(1,-40,0,2), UDim2.new(0,32,0,22), Color3.fromRGB(60,190,120), nil, 11)
-            playBtn.MouseButton1Click:Connect(function()
-                F.updatePreviewAnimation(r.id, r.label)
-                F.notify("Previewing "..r.label, "info")
-            end)
-        end
+    for k, bb in pairs(faceBtns) do
+        bb.BackgroundColor3 = (k == Fall.face) and C(90,140,255) or C(35,35,55)
     end
-    F.refreshRecentsUI()
-end
+    y = y + 30
+    toggle(8, 388, "steer", "STEER WITH THE MOVE KEYS: ON", "STEER WITH THE MOVE KEYS: OFF")
+    y = y + 30
+    help("FACE: KEEP the way you were facing, turn to the SCREEN, or face THEM (who you sync with, else your FNF opponent). STEER: the move keys drift you sideways, 14 studs/s at most.", 40)
 
-function F.buildTab_Favorites(pages)
-    local pg4 = pages["❤ FAVES"]
+    F.makeLabel(pg, "FALLING POSE", UDim2.new(0,8,0,y), UDim2.new(0,110,0,26), C(160,160,160), Enum.TextXAlignment.Left, 10)
+    local animBox = F.makeBox(pg, UDim2.new(0,118,0,y), UDim2.new(1,-126,0,26),
+        "animation ID (empty = your own fall animation)", Fall.anim)
+    animBox.FocusLost:Connect(function()
+        Fall.anim = (animBox.Text or ""):gsub("%D", "")
+        animBox.Text = Fall.anim
+        if Fall.on then Fall.playAnim() end
+        F.notify((Fall.anim ~= "") and ("Falling pose set to " .. Fall.anim) or "Falling pose: your character's own fall", "info")
+    end)
+    y = y + 30
+    help("It plays under your poses, so your notes still show over it.", 14)
 
-    local favTitle = F.makeLabel(pg4, "❤ FAVORITE ANIMATIONS", UDim2.new(0,8,0,6), UDim2.new(1,-16,0,20), Color3.fromRGB(255,80,180), Enum.TextXAlignment.Left, 12)
-    F.regText(favTitle)
-    F.makeDivider(pg4, 28, Color3.fromRGB(0,200,255))
+    -- ---- effects ----
+    F.makeDivider(pg, y, C(255,80,180)); y = y + 6
+    local t3 = F.makeLabel(pg, "EFFECTS", UDim2.new(0,8,0,y), UDim2.new(1,-16,0,20), C(255,80,180), Enum.TextXAlignment.Left, 12)
+    t3.Font = Enum.Font.GothamBold
+    y = y + 24
+    toggle(8, 190, "wind", "WIND: ON", "WIND: OFF")
+    toggle(206, 190, "sound", "WIND SOUND: ON", "WIND SOUND: OFF")
+    y = y + 30
+    toggle(8, 190, "arrows", "ARROWS SWAY: ON", "ARROWS SWAY: OFF")
+    toggle(206, 190, "budge", "POSE BUDGE: ON", "POSE BUDGE: OFF")
+    y = y + 30
+    toggle(8, 190, "sway", "BODY SWAY: ON", "BODY SWAY: OFF")
+    toggle(206, 190, "shake", "CAMERA SHAKE: ON", "CAMERA SHAKE: OFF")
+    y = y + 34
 
-    local favNameBox = F.makeBox(pg4, UDim2.new(0,8,0,36), UDim2.new(0,180,0,28), "Name")
-    local favIdBox   = F.makeBox(pg4, UDim2.new(0,196,0,36), UDim2.new(0,138,0,28), "Anim ID")
-    local favAddBtn  = F.makeBtn(pg4, "＋ SAVE", UDim2.new(0,340,0,36), UDim2.new(0,74,0,28), Color3.fromRGB(60,190,120), nil, 11)
-
-    local favScroll = Instance.new("ScrollingFrame")
-    favScroll.Size = UDim2.new(1,-16,0,300); favScroll.Position = UDim2.new(0,8,0,72)
-    favScroll.BackgroundColor3 = Color3.fromRGB(18,18,26); favScroll.BorderSizePixel = 0
-    favScroll.ScrollBarThickness = 4; favScroll.CanvasSize = UDim2.new(0,0,0,0)
-    favScroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
-    favScroll.Parent = pg4; F.uiCorner(favScroll)
-    local favLayout = Instance.new("UIListLayout")
-    favLayout.Padding = UDim.new(0,4); favLayout.Parent = favScroll
-    local favPad = Instance.new("UIPadding")
-    favPad.PaddingTop = UDim.new(0,4); favPad.PaddingLeft = UDim.new(0,4); favPad.PaddingRight = UDim.new(0,4)
-    favPad.Parent = favScroll
-
-    local function refreshFavUI()
-        for _, c in ipairs(favScroll:GetChildren()) do
-            if c:IsA("Frame") then c:Destroy() end
-        end
-        for i, f in ipairs(favorites) do
-            local row = Instance.new("Frame")
-            row.Size = UDim2.new(1,-8,0,32); row.BackgroundColor3 = Color3.fromRGB(24,24,36)
-            row.BorderSizePixel = 0; row.LayoutOrder = i; row.Parent = favScroll
-            F.uiCorner(row, UDim.new(0,6))
-            F.makeLabel(row, f.name.." — "..f.id, UDim2.new(0,8,0,0), UDim2.new(1,-116,1,0), Color3.fromRGB(200,200,215), Enum.TextXAlignment.Left, 10)
-            local playBtn = F.makeBtn(row, "▶", UDim2.new(1,-146,0,3), UDim2.new(0,34,0,26), Color3.fromRGB(0,180,230), nil, 11)
-            local addPlBtn = F.makeBtn(row, "➕LIST", UDim2.new(1,-108,0,3), UDim2.new(0,58,0,26), Color3.fromRGB(70,120,255), nil, 9)
-            local delBtn = F.makeBtn(row, "✕", UDim2.new(1,-42,0,3), UDim2.new(0,34,0,26), Color3.fromRGB(170,35,35), nil, 11)
-
-            playBtn.MouseButton1Click:Connect(function()
-                F.updatePreviewAnimation(f.id, f.name)
-                F.pushRecent(f.id, f.name)
-                F.notify("Previewing favorite: "..f.name, "info")
-            end)
-            addPlBtn.MouseButton1Click:Connect(function()
-                table.insert(playlist, { name = f.name, id = f.id, delay = 1 })
-                if F.refreshPlaylistUI then F.refreshPlaylistUI() end
-                F.notify(f.name.." added to playlist", "success")
-            end)
-            delBtn.MouseButton1Click:Connect(function()
-                table.remove(favorites, i)
-                refreshFavUI()
-            end)
-        end
+    local col = 0
+    local function pct(label, key)
+        local x = (col == 0) and 8 or 206
+        F.makeLabel(pg, label, UDim2.new(0,x,0,y), UDim2.new(0,138,0,16), C(160,160,160), Enum.TextXAlignment.Left, 9)
+        local v = F.makeLabel(pg, string.format("%d%%", math.floor(Fall[key] * 100 + 0.5)), UDim2.new(0,x+138,0,y),
+            UDim2.new(0,52,0,16), C(255,80,180), Enum.TextXAlignment.Right, 9)
+        F.regText(v)
+        F.makeSlider(pg, UDim2.new(0,x,0,y+18), UDim2.new(0,190,0,12), 0, 1, Fall[key], function(val)
+            Fall[key] = val
+            v.Text = string.format("%d%%", math.floor(val * 100 + 0.5))
+        end)
+        if col == 1 then y = y + 40 end
+        col = 1 - col
     end
+    pct("WIND", "windAmt")
+    pct("ARROW SWAY", "arrowAmt")
+    pct("BODY SWAY", "swayAmt")
+    pct("CAMERA SHAKE", "shakeAmt")
+    help("POSE BUDGE: each pose knocks its arrow its way, and you a little the same way (screen left, right, up or down), then you both spring back. Only you see the wind, the arrows and the shake; everyone sees your body fall, lean, sway and budge. The faster you fall, the stronger it all gets.", 52)
 
-    favAddBtn.MouseButton1Click:Connect(function()
-        local id = favIdBox.Text:gsub("%D","")
-        local nm = favNameBox.Text ~= "" and favNameBox.Text or ("Fav "..(#favorites+1))
-        if id == "" then F.notify("Enter an anim ID to save", "warn"); return end
-        table.insert(favorites, { name = nm, id = id })
-        favNameBox.Text = ""; favIdBox.Text = ""
-        refreshFavUI()
-        F.notify("Saved to favorites: "..nm, "success")
-    end)
-    refreshFavUI()
-end
-
-function F.buildTab_Playlist(pages)
-    local pg5 = pages["🎶 LIST"]
-
-    local plTitle = F.makeLabel(pg5, "🎶 PLAYLIST MANAGER", UDim2.new(0,8,0,6), UDim2.new(1,-16,0,20), Color3.fromRGB(255,80,180), Enum.TextXAlignment.Left, 12)
-    F.regText(plTitle)
-    F.makeDivider(pg5, 28, Color3.fromRGB(0,200,255))
-
-    local plScroll = Instance.new("ScrollingFrame")
-    plScroll.Size = UDim2.new(1,-16,0,260); plScroll.Position = UDim2.new(0,8,0,36)
-    plScroll.BackgroundColor3 = Color3.fromRGB(18,18,26); plScroll.BorderSizePixel = 0
-    plScroll.ScrollBarThickness = 4; plScroll.CanvasSize = UDim2.new(0,0,0,0)
-    plScroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
-    plScroll.Parent = pg5; F.uiCorner(plScroll)
-    local plLayout = Instance.new("UIListLayout")
-    plLayout.Padding = UDim.new(0,4); plLayout.Parent = plScroll
-    local plPad = Instance.new("UIPadding")
-    plPad.PaddingTop = UDim.new(0,4); plPad.PaddingLeft = UDim.new(0,4); plPad.PaddingRight = UDim.new(0,4)
-    plPad.Parent = plScroll
-
-    F.refreshPlaylistUI = function()
-        for _, c in ipairs(plScroll:GetChildren()) do
-            if c:IsA("Frame") then c:Destroy() end
-        end
-        for i, item in ipairs(playlist) do
-            local row = Instance.new("Frame")
-            row.Size = UDim2.new(1,-8,0,30)
-            row.BackgroundColor3 = (i == playlistIndex and playlistPlaying) and Color3.fromRGB(50,30,60) or Color3.fromRGB(24,24,36)
-            row.BorderSizePixel = 0; row.LayoutOrder = i; row.Parent = plScroll
-            F.uiCorner(row, UDim.new(0,6))
-            F.makeLabel(row, string.format("%d. %s — %s", i, item.name or item.id, item.id),
-                UDim2.new(0,8,0,0), UDim2.new(1,-40,1,0), Color3.fromRGB(200,200,215), Enum.TextXAlignment.Left, 10)
-            local rem = F.makeBtn(row, "✕", UDim2.new(1,-34,0,3), UDim2.new(0,26,0,24), Color3.fromRGB(170,35,35), nil, 11)
-            rem.MouseButton1Click:Connect(function()
-                table.remove(playlist, i)
-                F.refreshPlaylistUI()
-            end)
-        end
-    end
-    F.refreshPlaylistUI()
-
-    local plAddBox = F.makeBox(pg5, UDim2.new(0,8,0,300), UDim2.new(0,220,0,26), "Animation ID to add")
-    local plAddBtn = F.makeBtn(pg5, "+ ADD", UDim2.new(0,236,0,300), UDim2.new(0,80,0,26), Color3.fromRGB(35,35,55))
-    plAddBtn.MouseButton1Click:Connect(function()
-        local id = plAddBox.Text:gsub("%D","")
-        if id == "" then F.notify("Enter an anim ID", "warn"); return end
-        table.insert(playlist, { name = "Track "..(#playlist+1), id = id, delay = 1 })
-        plAddBox.Text = ""
-        F.refreshPlaylistUI()
-    end)
-
-    local plPlay = F.makeBtn(pg5, "▶ PLAY", UDim2.new(0,8,0,332), UDim2.new(0,96,0,28), Color3.fromRGB(60,190,120), nil, 11)
-    local plPrev = F.makeBtn(pg5, "⏮ PREV", UDim2.new(0,110,0,332), UDim2.new(0,86,0,28), Color3.fromRGB(70,120,255), nil, 11)
-    local plNext = F.makeBtn(pg5, "NEXT ⏭", UDim2.new(0,202,0,332), UDim2.new(0,86,0,28), Color3.fromRGB(70,120,255), nil, 11)
-    local plStop = F.makeBtn(pg5, "■ STOP", UDim2.new(0,294,0,332), UDim2.new(0,100,0,28), Color3.fromRGB(190,50,50), nil, 11)
-
-    plPlay.MouseButton1Click:Connect(function()
-        if #playlist == 0 then F.notify("Playlist is empty", "warn"); return end
-        F.playPlaylist(); F.notify("Playlist started", "info")
-    end)
-    plPrev.MouseButton1Click:Connect(F.prevPlaylistTrack)
-    plNext.MouseButton1Click:Connect(F.nextPlaylistTrack)
-    plStop.MouseButton1Click:Connect(function() F.stopPlaylist(); F.refreshPlaylistUI() end)
+    F.buildFallSync(pg, y)
 end
 
 function F.buildTab_FX(pages)
@@ -17064,286 +17546,6 @@ function F.buildTab_FX(pages)
         F.stopMusicTrack()
         F.notify("Stopped shared music", "info")
     end)
-end
-
-function F.buildTab_Video(pages)
-    local pg = pages["🎞 VIDEO"]
-    local C = Color3.fromRGB
-
-    local title = F.makeLabel(pg, "VIDEO PLAYER", UDim2.new(0,8,0,6), UDim2.new(1,-16,0,22),
-        C(255,80,180), Enum.TextXAlignment.Left, 14)
-    title.Font = Enum.Font.GothamBlack
-    F.regText(title)
-    F.makeLabel(pg, "Plays videos from your computer. Only you can see them.",
-        UDim2.new(0,8,0,28), UDim2.new(1,-16,0,16), C(130,130,150), Enum.TextXAlignment.Left, 9)
-
-    -- ── what this executor can do ──
-    local caps = F.makeLabel(pg, "", UDim2.new(0,8,0,48), UDim2.new(1,-16,0,16),
-        C(160,160,180), Enum.TextXAlignment.Left, 10)
-    local function refreshCaps()
-        local a = Vid.api.asset and "YES" or "NO"
-        local l = Vid.api.list and "YES" or "NO"
-        caps.Text = "local video support: " .. a .. "   |   folder listing: " .. l
-        caps.TextColor3 = Vid.api.asset and C(120,230,150) or C(255,120,90)
-    end
-    refreshCaps()
-
-    -- ── the drop box ──
-    F.makeDivider(pg, 70, THEMES[currentThemeName].accent)
-    local dropHdr = F.makeLabel(pg, "YOUR VIDEOS", UDim2.new(0,8,0,76), UDim2.new(0,160,0,18),
-        C(255,80,180), Enum.TextXAlignment.Left, 11)
-    dropHdr.Font = Enum.Font.GothamBold
-    F.regText(dropHdr)
-
-    local howTo = F.makeLabel(pg,
-        "Drag a .webm file into this folder in Windows Explorer, then press REFRESH:\n"
-        .. "your executor's  workspace / " .. Vid.folder,
-        UDim2.new(0,8,0,96), UDim2.new(1,-16,0,32), C(200,200,215), Enum.TextXAlignment.Left, 9)
-    howTo.TextWrapped = true
-
-    local refresh = F.makeBtn(pg, "REFRESH", UDim2.new(1,-100,0,74), UDim2.new(0,92,0,22), C(70,120,255), nil, 9)
-
-    local list = Instance.new("ScrollingFrame")
-    list.Size = UDim2.new(1,-16,0,130); list.Position = UDim2.new(0,8,0,132)
-    list.BackgroundColor3 = C(12,11,18); list.BackgroundTransparency = 0.25
-    list.BorderSizePixel = 0; list.ScrollBarThickness = 3
-    list.CanvasSize = UDim2.new(0,0,0,0); list.AutomaticCanvasSize = Enum.AutomaticSize.Y
-    list.Parent = pg
-    F.uiCorner(list, UDim.new(0,8))
-    local ll = Instance.new("UIListLayout"); ll.Padding = UDim.new(0,3); ll.Parent = list
-    local lp = Instance.new("UIPadding")
-    lp.PaddingTop = UDim.new(0,4); lp.PaddingLeft = UDim.new(0,4); lp.PaddingRight = UDim.new(0,4)
-    lp.Parent = list
-
-    local function row(text, color, order)
-        local l = F.makeLabel(list, text, UDim2.new(0,0,0,0), UDim2.new(1,-8,0,0),
-            color, Enum.TextXAlignment.Left, 9)
-        l.AutomaticSize = Enum.AutomaticSize.Y
-        l.TextWrapped = true
-        l.LayoutOrder = order
-        return l
-    end
-
-    local function fill()
-        for _, c in ipairs(list:GetChildren()) do
-            if c:IsA("GuiObject") then c:Destroy() end
-        end
-        if not Vid.api.list then
-            row("Your executor can't list folders. Type the file name below instead.", C(255,170,80), 1)
-            return
-        end
-        local files = Vid.listFiles()
-        if #files == 0 then
-            row("Nothing here yet. Drop a .webm into the folder above and press REFRESH.", C(140,140,160), 1)
-            return
-        end
-        for i, f in ipairs(files) do
-            local playable = (f.ext == "webm")
-            local b = F.makeBtn(list,
-                (playable and "▶  " or "⚠  ") .. f.name .. (playable and "" or "   (convert to .webm)"),
-                UDim2.new(0,0,0,0), UDim2.new(1,-8,0,26),
-                playable and C(34,32,48) or C(55,35,30), nil, 10)
-            b.TextXAlignment = Enum.TextXAlignment.Left
-            b.LayoutOrder = i
-            local pad = Instance.new("UIPadding"); pad.PaddingLeft = UDim.new(0,10); pad.Parent = b
-            local path = f.path
-            b.MouseButton1Click:Connect(function() Vid.play(path) end)
-        end
-    end
-    refresh.MouseButton1Click:Connect(function()
-        Vid.resolveApi(); refreshCaps(); fill()
-    end)
-    fill()
-
-    -- ── manual entry: a file name, or a Roblox video ID ──
-    local manual = F.makeBox(pg, UDim2.new(0,8,0,270), UDim2.new(1,-114,0,28),
-        "file name (clip.webm) or a Roblox video ID", Vid.lastFile ~= "" and Vid.lastFile:match("[^/\\]+$") or "")
-    local manualGo = F.makeBtn(pg, "PLAY", UDim2.new(1,-100,0,270), UDim2.new(0,92,0,28), C(60,190,120), nil, 11)
-    manualGo.MouseButton1Click:Connect(function()
-        local t = manual.Text:gsub("^%s+", ""):gsub("%s+$", "")
-        if t == "" then return end
-        if t:match("^%d+$") then
-            Vid.play(t, true)                    -- a Roblox-hosted video
-        else
-            local path = t:find("/") and t or (Vid.folder .. "/" .. t)
-            Vid.play(path)
-        end
-    end)
-
-    Vid.statusLbl = F.makeLabel(pg, "pick a video", UDim2.new(0,8,0,302), UDim2.new(1,-16,0,28),
-        C(160,160,180), Enum.TextXAlignment.Left, 10)
-    Vid.statusLbl.TextWrapped = true
-
-    -- ── transport ──
-    local trY = 334
-    local function tb(txt, x, w, col, fn)
-        local b = F.makeBtn(pg, txt, UDim2.new(0,x,0,trY), UDim2.new(0,w,0,28), col, nil, 10)
-        b.MouseButton1Click:Connect(fn)
-        return b
-    end
-    tb("PLAY / PAUSE", 8, 126, C(60,190,120), Vid.togglePause)
-    tb("RESTART", 140, 90, C(45,40,60), Vid.restart)
-    tb("STOP", 236, 70, C(190,50,50), Vid.stop)
-    local loopB
-    loopB = tb(Vid.looped and "LOOP: ON" or "LOOP: OFF", 312, 84, Vid.looped and C(70,120,255) or C(45,40,60), function()
-        Vid.looped = not Vid.looped
-        if Vid.frame then Vid.frame.Looped = Vid.looped end
-        loopB.Text = Vid.looped and "LOOP: ON" or "LOOP: OFF"
-        loopB.BackgroundColor3 = Vid.looped and C(70,120,255) or C(45,40,60)
-    end)
-    Vid.timeLbl = F.makeLabel(pg, "", UDim2.new(0,8,0,trY+32), UDim2.new(1,-16,0,16),
-        C(200,200,215), Enum.TextXAlignment.Left, 10)
-    Vid.timeLbl.Font = Enum.Font.Code
-
-    -- ── display mode ──
-    local dY = trY + 56
-    F.makeLabel(pg, "SHOW IT AS", UDim2.new(0,8,0,dY), UDim2.new(1,-16,0,16),
-        C(160,160,160), Enum.TextXAlignment.Left, 10)
-    local modes = { { "WINDOW", "Window" }, { "FULLSCREEN", "Fullscreen" }, { "BACKDROP", "Backdrop" } }
-    local modeBtns = {}
-    local function syncModes()
-        local shown = Vid.stage.on and "BACKDROP" or Vid.display
-        for k, b in pairs(modeBtns) do
-            b.BackgroundColor3 = (k == shown) and C(255,80,180) or C(35,35,55)
-            b.AutoButtonColor = not Vid.stage.on
-        end
-    end
-    Vid.syncModes = syncModes
-    for i, m in ipairs(modes) do
-        local b = F.makeBtn(pg, m[2], UDim2.new(0, 8 + (i-1) * 132, 0, dY + 20), UDim2.new(0,126,0,26), C(35,35,55), nil, 10)
-        modeBtns[m[1]] = b
-        b.MouseButton1Click:Connect(function()
-            if Vid.stage.on then
-                F.notify("The stage keeps the video as the backdrop — turn it off to change this", "info")
-                return
-            end
-            Vid.display = m[1]; syncModes(); Vid.applyLayout()
-        end)
-    end
-    syncModes()
-    F.makeLabel(pg, "Backdrop plays full screen behind every other panel.",
-        UDim2.new(0,8,0,dY+50), UDim2.new(1,-16,0,14), C(120,120,140), Enum.TextXAlignment.Left, 9)
-
-    local sliders = {
-        { key = "volume",  label = "VOLUME",          min = 0,   max = 1,   fmt = "%.2f" },
-        { key = "opacity", label = "SEE-THROUGH",     min = 0,   max = 0.9, fmt = "%.2f" },
-        { key = "scale",   label = "WINDOW SIZE",     min = 0.5, max = 2.2, fmt = "%.2f" },
-    }
-    for i, s in ipairs(sliders) do
-        local ry = dY + 72 + (i-1) * 42
-        F.makeLabel(pg, s.label, UDim2.new(0,8,0,ry), UDim2.new(0,200,0,18), C(160,160,160), Enum.TextXAlignment.Left, 10)
-        local v = F.makeLabel(pg, string.format(s.fmt, Vid[s.key]), UDim2.new(0,306,0,ry), UDim2.new(0,90,0,18),
-            C(255,80,180), Enum.TextXAlignment.Right, 10)
-        F.regText(v)
-        local ck, cf = s.key, s.fmt
-        F.makeSlider(pg, UDim2.new(0,8,0,ry+20), UDim2.new(1,-16,0,12), s.min, s.max, Vid[s.key], function(val)
-            Vid[ck] = val
-            v.Text = string.format(cf, val)
-            if ck == "volume" and Vid.frame then Vid.frame.Volume = val end
-            Vid.applyLayout()
-        end)
-    end
-
-    -- ── video stage ──
-    local sgY = dY + 72 + #sliders * 42 + 4
-    F.makeDivider(pg, sgY, THEMES[currentThemeName].accent)
-    local sgT = F.makeLabel(pg, "VIDEO STAGE", UDim2.new(0,8,0,sgY+6), UDim2.new(1,-16,0,18),
-        C(255,80,180), Enum.TextXAlignment.Left, 11)
-    sgT.Font = Enum.Font.GothamBold
-    F.regText(sgT)
-    local sgBody = F.makeLabel(pg,
-        "Your video replaces the whole world. Only you and your opponent stay, in their normal colours. "
-        .. "Set your opponent in the CAM tab.",
-        UDim2.new(0,8,0,sgY+26), UDim2.new(1,-16,0,28), C(130,130,150), Enum.TextXAlignment.Left, 9)
-    sgBody.TextWrapped = true
-    local sgBtn = F.makeBtn(pg, "VIDEO STAGE OFF", UDim2.new(0,8,0,sgY+58), UDim2.new(1,-16,0,32), C(35,35,55), nil, 11)
-    sgBtn.MouseButton1Click:Connect(function()
-        if Vid.stage.on then Vid.stopStage() else Vid.startStage() end
-    end)
-    local sgInfo = F.makeLabel(pg, "", UDim2.new(0,8,0,sgY+92), UDim2.new(1,-16,0,16),
-        C(160,160,180), Enum.TextXAlignment.Left, 9)
-    Vid.refreshStageUI = function()
-        if not sgBtn.Parent then return end
-        sgBtn.Text = Vid.stage.on and "VIDEO STAGE ON" or "VIDEO STAGE OFF"
-        sgBtn.BackgroundColor3 = Vid.stage.on and C(255,80,180) or C(35,35,55)
-        if not Vid.stage.on then sgInfo.Text = ""; return end
-        -- what the stage is actually drawing right now
-        local function part(e, label, expected)
-            if not expected then return label .. ": not set" end
-            if not e then return label .. ": copy FAILED" end
-            return string.format("%s: %d parts", label, #e.map)
-        end
-        local me, op = Vid.stage.me, Vid.stage.opp
-        sgInfo.Text = part(me, "you", character ~= nil) .. "   |   "
-            .. part(op, "opponent", currentTarget and currentTarget.Character ~= nil)
-        local ok = me and #me.map > 0
-        sgInfo.TextColor3 = ok and C(120,230,150) or C(255,120,90)
-    end
-    Vid.refreshStageUI()
-
-    -- ── converting ──
-    local cvY = sgY + 114
-    F.makeDivider(pg, cvY, THEMES[currentThemeName].accent)
-    local cvT = F.makeLabel(pg, "HAVE AN .MP4?", UDim2.new(0,8,0,cvY+6), UDim2.new(1,-16,0,18),
-        C(255,170,80), Enum.TextXAlignment.Left, 11)
-    cvT.Font = Enum.Font.GothamBold
-    local cvBody = F.makeLabel(pg,
-        "Roblox only plays .webm. Any free video converter works — pick WebM (VP9). "
-        .. "Or with ffmpeg, run this and drop the result in the folder:",
-        UDim2.new(0,8,0,cvY+26), UDim2.new(1,-16,0,30), C(200,200,215), Enum.TextXAlignment.Left, 9)
-    cvBody.TextWrapped = true
-    local cmd = F.makeBox(pg, UDim2.new(0,8,0,cvY+60), UDim2.new(1,-16,0,26), "",
-        "ffmpeg -i input.mp4 -c:v libvpx-vp9 -b:v 2M -c:a libopus output.webm")
-    cmd.TextSize = 9
-    cmd.Font = Enum.Font.Code
-    cmd.ClearTextOnFocus = false
-    cmd.TextEditable = false
-    F.makeLabel(pg, "Short clips at 720p or below load most reliably.",
-        UDim2.new(0,8,0,cvY+90), UDim2.new(1,-16,0,14), C(120,120,140), Enum.TextXAlignment.Left, 9)
-
-    -- ── black screen fade ──
-    local boY = cvY + 116
-    F.makeDivider(pg, boY, C(255,255,255))
-    local boT = F.makeLabel(pg, "BLACK SCREEN FADE", UDim2.new(0,8,0,boY+6), UDim2.new(1,-16,0,18),
-        C(235,235,245), Enum.TextXAlignment.Left, 11)
-    boT.Font = Enum.Font.GothamBold
-    F.makeLabel(pg, "Smoothly fades to black, holds a moment, then slowly fades back in.",
-        UDim2.new(0,8,0,boY+26), UDim2.new(1,-16,0,14), C(130,130,150), Enum.TextXAlignment.Left, 9)
-
-    local boTest = F.makeBtn(pg, "TRY IT", UDim2.new(0,8,0,boY+46), UDim2.new(0,250,0,28), C(20,20,24), nil, 11)
-    boTest.MouseButton1Click:Connect(Vid.blackout)
-    F.makeLabel(pg, "KEY", UDim2.new(0,266,0,boY+46), UDim2.new(0,30,0,28), C(160,160,160), Enum.TextXAlignment.Left, 10)
-    local boKey = F.makeBtn(pg, Vid.boKey, UDim2.new(0,298,0,boY+46), UDim2.new(0,64,0,28), C(25,35,48), nil, 11)
-    boKey.MouseButton1Click:Connect(function()
-        boKey.Text = "..."; boKey.BackgroundColor3 = C(0,200,255)
-        local conn; conn = F.own(UserInputService.InputBegan:Connect(function(inp)
-            if inp.KeyCode and inp.KeyCode.Name ~= "Unknown" and not inp.KeyCode.Name:match("Mouse") then
-                Vid.boKey = inp.KeyCode.Name
-                boKey.Text = Vid.boKey
-                boKey.BackgroundColor3 = C(25,35,48)
-                if Keys.refresh then Keys.refresh() end
-                conn:Disconnect()
-            end
-        end))
-    end)
-
-    local boRows = {
-        { key = "boFadeIn",  label = "FADE TO BLACK (s)",  min = 0.05, max = 2, fmt = "%.2f" },
-        { key = "boHold",    label = "STAY BLACK (s)",     min = 0,    max = 3, fmt = "%.2f" },
-        { key = "boFadeOut", label = "FADE BACK IN (s)",   min = 0.2,  max = 6, fmt = "%.2f" },
-    }
-    for i, s in ipairs(boRows) do
-        local ry = boY + 84 + (i-1) * 42
-        F.makeLabel(pg, s.label, UDim2.new(0,8,0,ry), UDim2.new(0,200,0,18), C(160,160,160), Enum.TextXAlignment.Left, 10)
-        local v = F.makeLabel(pg, string.format(s.fmt, Vid[s.key]), UDim2.new(0,306,0,ry), UDim2.new(0,90,0,18),
-            C(255,80,180), Enum.TextXAlignment.Right, 10)
-        F.regText(v)
-        local ck, cf = s.key, s.fmt
-        F.makeSlider(pg, UDim2.new(0,8,0,ry+20), UDim2.new(1,-16,0,12), s.min, s.max, Vid[s.key], function(val)
-            Vid[ck] = val
-            v.Text = string.format(cf, val)
-        end)
-    end
 end
 
 function F.buildTab_Result(pages)
@@ -18755,7 +18957,7 @@ function F.buildGUI()
     contentArea.Position = UDim2.new(0,0,0,42+TAB_H+4)
     contentArea.BackgroundTransparency = 1; contentArea.Parent = main
 
-    local tabNames   = { "📋 BINDS", "👯 COPY", "💪 ARMS", "🎭 STAGE", "✂ CUTTER", "🎥 CAM", "✈ FLY", "🎬 MAKER", "👁 PREVIEW", "❤ FAVES", "🎶 LIST", "🎛 FX", "🎞 VIDEO", "🏆 RESULT", "✨ SHOW", "⚙ SETTINGS" }
+    local tabNames   = { "📋 BINDS", "👯 COPY", "💪 ARMS", "✂ CUTTER", "🎥 CAM", "✈ FLY", "💨 FALL", "🎛 FX", "🏆 RESULT", "✨ SHOW", "⚙ SETTINGS" }
     local pages      = {}
     local tabButtons = {}
 
@@ -18831,11 +19033,9 @@ function F.buildGUI()
     -- one tab failing to build mustn't stop the tabs after it from building
     for _, tab in ipairs({
         { "BINDS", F.buildTab_Binds }, { "COPY", F.buildTab_Copy }, { "ARMS", F.buildTab_Arms },
-        { "STAGE", F.buildTab_Stage }, { "CUTTER", F.buildTab_Cutter }, { "CAM", F.buildTab_Cam },
-        { "FLY", F.buildTab_Fly }, { "MAKER", F.buildTab_Maker }, { "PREVIEW", F.buildTab_Preview },
-        { "FAVES", F.buildTab_Favorites }, { "LIST", F.buildTab_Playlist }, { "FX", F.buildTab_FX },
-        { "VIDEO", F.buildTab_Video }, { "RESULT", F.buildTab_Result }, { "SHOW", F.buildTab_Show },
-        { "SETTINGS", F.buildTab_Settings },
+        { "CUTTER", F.buildTab_Cutter }, { "CAM", F.buildTab_Cam }, { "FLY", F.buildTab_Fly },
+        { "FALL", F.buildTab_Fall }, { "FX", F.buildTab_FX }, { "RESULT", F.buildTab_Result },
+        { "SHOW", F.buildTab_Show }, { "SETTINGS", F.buildTab_Settings },
     }) do
         local okTab, tabErr = pcall(tab[2], pages)
         if not okTab then
@@ -18895,6 +19095,8 @@ function F.teardown()
     pcall(function() if Cutscene.active then Cutscene.exit() end end)
     pcall(function() if Ride.enabled then Ride.unlock() end end)
     pcall(function() if Fly.enabled then Fly.stop() end end)
+    pcall(function() if Fall.on then Fall.stop() end end)
+    pcall(Fall.unbindShake)
     pcall(function() Air.stop(); Air.unbindFoe(); Air.dropHud() end)
     pcall(function() Copy.setTarget(nil) end)
     pcall(Vid.stopStage)
