@@ -33,6 +33,14 @@
     longer you hold.
     Sprites are local files made by the scripts in tools/.
 
+    v7.2.8
+      * BINDS: the BEAT SYNC, EQUALIZER and WAVEFORM row is remade as
+        three small screens side by side, each in its own colour. The
+        beat light pulses inside a ring between two arrows. The
+        equalizer and waveform bars keep their own width now (they
+        used to stretch into long strips across the row), and so do
+        the spectrum bars on FX.
+
     v7.2.7
       * The panel has a new look, made after the game's own menus:
         a yellow title bar with the note colours, indigo and purple
@@ -286,7 +294,7 @@ local sectionPrevKey     = "LeftBracket"   -- [ to go prev
 -- ============================================================
 local SpacingSystem          -- ★ forward-declared so F.setupCharacter can see it
 local SPACING                -- forward-declared: the save code above its definition needs it
-local INJECTOR_VERSION = "7.2.7"   -- up here so everything can read it
+local INJECTOR_VERSION = "7.2.8"   -- up here so everything can read it
 local animTracks   = {}
 local idleTrack    = nil
 local connections  = {}
@@ -14096,7 +14104,7 @@ function F.startVisualizerLoops()
                 for _, bar in ipairs(eqBars) do
                     local h = StatusState.playing and (0.25 + math.random() * 0.75) or (0.08 + math.random() * 0.2)
                     TweenService:Create(bar, TweenInfo.new(speed, Enum.EasingStyle.Sine), {
-                        Size = UDim2.new(1, 0, h, 0)
+                        Size = UDim2.new(bar.Size.X, UDim.new(h, 0))
                     }):Play()
                 end
             end
@@ -14111,7 +14119,7 @@ function F.startVisualizerLoops()
             if waveBars and F.vizShown(waveBars[1]) then
                 for i, bar in ipairs(waveBars) do
                     local h = 0.15 + 0.35 * (0.5 + 0.5 * math.sin(t + i * 0.6))
-                    bar.Size = UDim2.new(1, 0, h, 0)
+                    bar.Size = UDim2.new(bar.Size.X, UDim.new(h, 0))
                 end
             end
             -- spectrum bars glide to the heights the 20 Hz loop below sets,
@@ -14123,7 +14131,7 @@ function F.startVisualizerLoops()
                     local want = targets[i]
                     if want then
                         local cur = bar.Size.Y.Scale
-                        bar.Size = UDim2.new(1, 0, cur + (want - cur) * k, 0)
+                        bar.Size = UDim2.new(bar.Size.X, UDim.new(cur + (want - cur) * k, 0))
                     end
                 end
             end
@@ -15209,60 +15217,104 @@ function F.buildTab_Binds(pages)
         bpmValLbl.Text = string.format("%d BPM", math.floor(idleBPM + 0.5))
     end
 
+    -- ---- BEAT SYNC / EQUALIZER / WAVEFORM: three little arcade screens ----
     local vizY = bpmSliderY + 34
     F.makeDivider(pg1, vizY, Color3.fromRGB(0,200,255))
-    F.makeLabel(pg1, "BEAT SYNC", UDim2.new(0,8,0,vizY+6), UDim2.new(0,90,0,18), Color3.fromRGB(160,160,160), Enum.TextXAlignment.Left, 10)
+    local function vizScreen(x, w, label, col)
+        F.makeLabel(pg1, label, UDim2.new(0,x,0,vizY+8), UDim2.new(0,w,0,16), col, Enum.TextXAlignment.Left, 10)
+        local box = Funk.make("Frame", pg1, {
+            Name = label, Position = UDim2.new(0,x,0,vizY+26), Size = UDim2.new(0,w,0,34),
+            BackgroundColor3 = Funk.INK, BackgroundTransparency = 0.05, BorderSizePixel = 0,
+        })
+        Funk.make("UICorner", box, { CornerRadius = UDim.new(0,3) })
+        Funk.make("UIStroke", box, { ApplyStrokeMode = Enum.ApplyStrokeMode.Border,
+            Color = col, Thickness = 1.5, Transparency = 0.25 })
+        -- a glare line along the top, like a screen
+        Funk.make("Frame", box, { Size = UDim2.new(1,-6,0,1), Position = UDim2.new(0,3,0,2),
+            BackgroundColor3 = Color3.new(1,1,1), BackgroundTransparency = 0.85, BorderSizePixel = 0, ZIndex = 1 })
+        return box
+    end
+    local function vizGuide(box, yScale)
+        Funk.make("Frame", box, { Size = UDim2.new(1,-10,0,1), Position = UDim2.new(0,5,yScale,0),
+            BackgroundColor3 = Color3.new(1,1,1), BackgroundTransparency = 0.9, BorderSizePixel = 0, ZIndex = 1 })
+    end
+
+    -- the beat light pulses inside a ring, between a left and a right arrow
+    local beatBox = vizScreen(8, 96, "BEAT SYNC", Color3.fromRGB(255,80,180))
+    local ring = Funk.make("Frame", beatBox, { AnchorPoint = Vector2.new(0.5,0.5),
+        Position = UDim2.new(0.5,0,0.5,0), Size = UDim2.new(0,26,0,26), BackgroundTransparency = 1, ZIndex = 1 })
+    Funk.make("UICorner", ring, { CornerRadius = UDim.new(1,0) })
+    F.regStroke(Funk.make("UIStroke", ring, { Color = THEMES[currentThemeName].accent, Thickness = 1.5, Transparency = 0.5 }))
+    for _, a in ipairs({ { "◄", ARROW_COLORS.LEFT.hit, UDim2.new(0,14,0.5,0) }, { "►", ARROW_COLORS.RIGHT.hit, UDim2.new(1,-14,0.5,0) } }) do
+        Funk.make("TextLabel", beatBox, { AnchorPoint = Vector2.new(0.5,0.5), Position = a[3], Size = UDim2.new(0,14,0,14),
+            BackgroundTransparency = 1, Text = a[1], TextColor3 = a[2], TextTransparency = 0.25,
+            FontFace = Funk.FONT, TextSize = 12, ZIndex = 1 })
+    end
     beatDot = Instance.new("Frame")
     beatDot.AnchorPoint = Vector2.new(0.5,0.5)
     beatDot.Size = UDim2.new(0,10,0,10)
-    beatDot.Position = UDim2.new(0,100,0,vizY+15)
+    beatDot.Position = UDim2.new(0.5,0,0.5,0)
     beatDot.BackgroundColor3 = Color3.fromRGB(255,80,180)
-    beatDot.BorderSizePixel = 0; beatDot.Parent = pg1
+    beatDot.BorderSizePixel = 0; beatDot.ZIndex = 2; beatDot.Parent = beatBox
     F.uiCorner(beatDot, UDim.new(1,0))
     F.regBg(beatDot)
 
-    F.makeLabel(pg1, "EQUALIZER", UDim2.new(0,140,0,vizY+6), UDim2.new(0,100,0,18), Color3.fromRGB(160,160,160), Enum.TextXAlignment.Left, 10)
+    -- eight level bars, standing on the bottom, brighter at the top
+    local eqBox = vizScreen(112, 152, "EQUALIZER", Color3.fromRGB(255,218,64))
+    vizGuide(eqBox, 0.36); vizGuide(eqBox, 0.66)
     local eqHolder = Instance.new("Frame")
-    eqHolder.Size = UDim2.new(0,120,0,26); eqHolder.Position = UDim2.new(0,140,0,vizY+22)
-    eqHolder.BackgroundTransparency = 1; eqHolder.Parent = pg1
+    eqHolder.Size = UDim2.new(1,-10,1,-8); eqHolder.Position = UDim2.new(0,5,0,4)
+    eqHolder.BackgroundTransparency = 1; eqHolder.ZIndex = 2; eqHolder.Parent = eqBox
     local eqLayout = Instance.new("UIListLayout")
     eqLayout.FillDirection = Enum.FillDirection.Horizontal
     eqLayout.Padding = UDim.new(0,3)
     eqLayout.VerticalAlignment = Enum.VerticalAlignment.Bottom
+    eqLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+    eqLayout.SortOrder = Enum.SortOrder.LayoutOrder
     eqLayout.Parent = eqHolder
     eqBars = {}
     for i = 1, 8 do
         local bar = Instance.new("Frame")
-        bar.Size = UDim2.new(0, 10, 0.2, 0)
+        bar.Size = UDim2.new(0, 14, 0.2, 0)
+        bar.LayoutOrder = i
         bar.BackgroundColor3 = THEMES[currentThemeName].accent
         bar.BorderSizePixel = 0
         bar.Parent = eqHolder
-        F.uiCorner(bar, UDim.new(0,2))
+        F.uiCorner(bar, UDim.new(0,1))
         F.regBg(bar)
+        local shade = Instance.new("UIGradient")
+        shade.Rotation = 90
+        shade.Color = ColorSequence.new(Color3.fromRGB(255,255,255), Color3.fromRGB(150,140,190))
+        shade.Parent = bar
         table.insert(eqBars, bar)
     end
 
-    F.makeLabel(pg1, "WAVEFORM", UDim2.new(0,270,0,vizY+6), UDim2.new(0,120,0,18), Color3.fromRGB(160,160,160), Enum.TextXAlignment.Left, 10)
+    -- sixteen thin bars rolling around a centre line
+    local waveBox = vizScreen(272, 152, "WAVEFORM", Color3.fromRGB(0,229,255))
+    vizGuide(waveBox, 0.5)
     local waveHolder = Instance.new("Frame")
-    waveHolder.Size = UDim2.new(0,130,0,26); waveHolder.Position = UDim2.new(0,270,0,vizY+22)
-    waveHolder.BackgroundTransparency = 1; waveHolder.Parent = pg1
+    waveHolder.Size = UDim2.new(1,-10,1,-8); waveHolder.Position = UDim2.new(0,5,0,4)
+    waveHolder.BackgroundTransparency = 1; waveHolder.ZIndex = 2; waveHolder.Parent = waveBox
     local waveLayout = Instance.new("UIListLayout")
     waveLayout.FillDirection = Enum.FillDirection.Horizontal
-    waveLayout.Padding = UDim.new(0,2)
+    waveLayout.Padding = UDim.new(0,3)
     waveLayout.VerticalAlignment = Enum.VerticalAlignment.Center
+    waveLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+    waveLayout.SortOrder = Enum.SortOrder.LayoutOrder
     waveLayout.Parent = waveHolder
     waveBars = {}
     for i = 1, 16 do
         local bar = Instance.new("Frame")
-        bar.Size = UDim2.new(0, 5, 0.3, 0)
+        bar.Size = UDim2.new(0, 6, 0.3, 0)
+        bar.LayoutOrder = i
         bar.BackgroundColor3 = THEMES[currentThemeName].accent2
         bar.BorderSizePixel = 0
         bar.Parent = waveHolder
-        F.uiCorner(bar, UDim.new(0,2))
+        F.uiCorner(bar, UDim.new(1,0))
         table.insert(waveBars, bar)
     end
 
-    local statusY = vizY + 60
+    local statusY = vizY + 68
     F.makeDivider(pg1, statusY, Color3.fromRGB(255,80,180))
     local statusTitle = F.makeLabel(pg1, "📊 STATUS", UDim2.new(0,8,0,statusY+6), UDim2.new(0,120,0,18), Color3.fromRGB(255,80,180), Enum.TextXAlignment.Left, 11)
     F.regText(statusTitle)
