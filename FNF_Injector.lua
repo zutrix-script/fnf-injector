@@ -14,6 +14,7 @@
     ║  + NEW: Strum engine • the game's hold notes          ║
     ║  + NEW: Ride lock v4: others see you stuck on it      ║
     ║  + NEW: COPY tab: copy a player's moves               ║
+    ║  + NEW: Funkin' look: arcade font, halftone, colours  ║
     ╚══════════════════════════════════════════════════════╝
 
     ARMS: each note can play up to three animation layers together
@@ -31,6 +32,19 @@
     from under its arrow, and holding builds health, faster the
     longer you hold.
     Sprites are local files made by the scripts in tools/.
+
+    v7.2.7
+      * The panel has a new look, made after the game's own menus:
+        a yellow title bar with the note colours, indigo and purple
+        behind halftone dots and a graffiti tag, a border in every
+        colour that slowly turns, and one thin, square arcade font
+        (Zekton) everywhere. Every tab shows at once in a two-row
+        menu; the one you're on lights up in its colour and bumps to
+        the beat, and its page slides in. Each section sits on its
+        own panel outlined in its colour. Buttons light up yellow
+        under the pointer and flash when you press them. Sliders
+        are meters with a diamond handle. New FUNKIN theme (yellow).
+        Nothing else changed: every button does what it did.
 
     v7.2.6
       * New FALL tab, for when you get ejected or any fall through
@@ -272,7 +286,7 @@ local sectionPrevKey     = "LeftBracket"   -- [ to go prev
 -- ============================================================
 local SpacingSystem          -- ★ forward-declared so F.setupCharacter can see it
 local SPACING                -- forward-declared: the save code above its definition needs it
-local INJECTOR_VERSION = "7.2.6"   -- up here so everything can read it
+local INJECTOR_VERSION = "7.2.7"   -- up here so everything can read it
 local animTracks   = {}
 local idleTrack    = nil
 local connections  = {}
@@ -1204,17 +1218,70 @@ local previewAngle     = 0
 local previewCloneContainer = nil
 
 local THEMES = {
+    Funkin = { accent = Color3.fromRGB(255, 218, 64), accent2 = Color3.fromRGB(0, 229, 255) },
     Pink   = { accent = Color3.fromRGB(255, 80, 180), accent2 = Color3.fromRGB(0, 200, 255) },
     Cyan   = { accent = Color3.fromRGB(0, 200, 255),  accent2 = Color3.fromRGB(255, 80, 180) },
     Purple = { accent = Color3.fromRGB(165, 85, 255), accent2 = Color3.fromRGB(255, 80, 180) },
     RGB    = { accent = Color3.fromRGB(255, 0, 0),    accent2 = Color3.fromRGB(0, 255, 255) },
     Mono   = { accent = Color3.fromRGB(255, 255, 255), accent2 = Color3.fromRGB(190, 190, 200) },
 }
-local currentThemeName = "Pink"
+local currentThemeName = "Funkin"
 local themedStrokes = {}
 local themedBgs     = {}
 local themedTexts   = {}
 local rgbCycleOn    = false
+
+-- ============================================================
+--  FUNKIN' LOOK — palette and live state (see FUNKIN' SKIN)
+-- ============================================================
+local Funk = {
+    -- one font everywhere: Zekton, thin and square like an arcade
+    -- cabinet's lettering, regular weight. It ships inside Roblox, so
+    -- it never has to download.
+    FAMILY = "rbxasset://fonts/families/Zekton.json",
+    FONT   = Font.new("rbxasset://fonts/families/Zekton.json", Enum.FontWeight.Regular, Enum.FontStyle.Normal),
+    TAG    = Font.new("rbxasset://fonts/families/PermanentMarker.json"),   -- the graffiti tag in the backdrop only
+
+    YELLOW = Color3.fromRGB(255, 218, 64),
+    MENU   = Color3.fromRGB(255, 222, 92),    -- the title bar, the menu's yellow
+    CYAN   = Color3.fromRGB(0, 229, 255),
+    PURPLE = Color3.fromRGB(176, 76, 255),
+    PINK   = Color3.fromRGB(255, 72, 196),
+    GREEN  = Color3.fromRGB(40, 245, 90),
+    RED    = Color3.fromRGB(255, 70, 90),
+    INK    = Color3.fromRGB(8, 5, 22),
+    PANEL  = Color3.fromRGB(16, 10, 48),      -- section panels and toasts
+    NAVY_LO = Color3.fromRGB(16, 10, 46),     -- the old dark greys turn into these indigos,
+    NAVY_HI = Color3.fromRGB(60, 42, 144),    -- darkest to lightest
+    EDGE   = Color3.fromRGB(0, 200, 255),     -- a resting button's rim
+
+    -- live
+    main = nil, loop = nil, t = 0, mono = false,
+    rim = nil, rimGrad = nil, bodyGrad = nil, pattern = nil,
+    titleBar = nil, titleText = nil, titleScale = nil, stripes = nil, sheen = nil,
+    sweep = nil, activeScale = nil,
+    noSkin = {}, pending = {}, flushing = false, fitQ = {},
+}
+Funk.TAB_COLORS = { Funk.PINK, Funk.CYAN, Funk.GREEN, Funk.RED, Funk.YELLOW }
+do
+    local function weak() return setmetatable({}, { __mode = "k" }) end
+    Funk.base     = weak()   -- text -> the size its builder asked for
+    Funk.wrote    = weak()   -- text -> the size this skin last gave it
+    Funk.head     = weak()   -- section titles
+    Funk.done     = weak()   -- dressed already (or this skin's own pieces)
+    Funk.mine     = weak()   -- this skin's own strokes
+    Funk.edges    = weak()   -- button -> its rim
+    Funk.hover    = weak()   -- button -> the pointer is on it
+    Funk.txt      = weak()   -- button -> the text colour its builder chose
+    Funk.tabs     = weak()   -- tab button -> { col, edge, scale, active, hover }
+    Funk.dividers = weak()   -- section dividers (F.makeDivider)
+    Funk.pages    = weak()   -- the tab pages
+    Funk.backs    = weak()   -- page -> the frame its section panels sit in
+    Funk.sig      = weak()   -- page -> the sections last drawn
+    Funk.dirty    = weak()
+    Funk.inQ      = weak()
+    Funk.parked   = weak()   -- texts not laid out yet; fitted later
+end
 
 local vinylImage       = nil
 local VINYL_DECAL_ID   = ""
@@ -3005,13 +3072,13 @@ function Keys.build()
     panel.Size = UDim2.new(0, 208, 0, 40)
     panel.Position = UDim2.new(0, 14, 0.5, 0)
     panel.AnchorPoint = Vector2.new(0, 0.5)
-    panel.BackgroundColor3 = Color3.fromRGB(10, 9, 15)
+    panel.BackgroundColor3 = Funk.PANEL
     panel.BackgroundTransparency = Keys.opacity
     panel.BorderSizePixel = 0
     panel.AutomaticSize = Enum.AutomaticSize.Y
     panel.ZIndex = F.silZ(135); panel.Parent = sg
-    F.uiCorner(panel, UDim.new(0, 10))
-    local edge = F.uiStroke(panel, Color3.fromRGB(255, 255, 255), 1)
+    F.uiCorner(panel, UDim.new(0, 4))
+    local edge = F.uiStroke(panel, Funk.EDGE, 1.5)
     edge.Transparency = math.clamp(Keys.opacity + 0.25, 0, 1)
     Keys.panel = panel
 
@@ -3041,39 +3108,39 @@ function Keys.refresh()
         order = order + 1
         if r.key == "--" then
             local h = Instance.new("TextLabel")
-            h.Size = UDim2.new(1, 0, 0, 16)
+            h.Size = UDim2.new(1, 0, 0, 17)
             h.BackgroundTransparency = 1
             h.Text = r.desc
             h.TextColor3 = THEMES[currentThemeName].accent
-            h.Font = Enum.Font.GothamBold; h.TextSize = 9
+            h.FontFace = Funk.FONT; h.TextSize = 12
             h.TextXAlignment = Enum.TextXAlignment.Left
             h.LayoutOrder = order
             h.ZIndex = F.silZ(137); h.Parent = panel
             F.regText(h)
         else
             local row = Instance.new("Frame")
-            row.Size = UDim2.new(1, 0, 0, 15)
+            row.Size = UDim2.new(1, 0, 0, 16)
             row.BackgroundTransparency = 1
             row.LayoutOrder = order
             row.ZIndex = F.silZ(136); row.Parent = panel
 
             local chip = Instance.new("TextLabel")
             chip.Size = UDim2.new(0, 62, 1, 0)
-            chip.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            chip.BackgroundTransparency = math.clamp(Keys.opacity + 0.25, 0, 1)
+            chip.BackgroundColor3 = Funk.NAVY_HI
+            chip.BackgroundTransparency = math.clamp(Keys.opacity + 0.1, 0, 1)
             chip.Text = r.key
-            chip.TextColor3 = Color3.fromRGB(245, 245, 255)
-            chip.Font = Enum.Font.GothamBold; chip.TextSize = 9
+            chip.TextColor3 = Funk.YELLOW
+            chip.FontFace = Funk.FONT; chip.TextSize = 11
             chip.BorderSizePixel = 0
             chip.ZIndex = F.silZ(137); chip.Parent = row
-            F.uiCorner(chip, UDim.new(0, 4))
+            F.uiCorner(chip, UDim.new(0, 2))
 
             local desc = Instance.new("TextLabel")
             desc.Size = UDim2.new(1, -68, 1, 0); desc.Position = UDim2.new(0, 68, 0, 0)
             desc.BackgroundTransparency = 1
             desc.Text = r.desc
-            desc.TextColor3 = Color3.fromRGB(215, 215, 230)
-            desc.Font = Enum.Font.Gotham; desc.TextSize = 9
+            desc.TextColor3 = Color3.fromRGB(218, 212, 252)
+            desc.FontFace = Funk.FONT; desc.TextSize = 11
             desc.TextXAlignment = Enum.TextXAlignment.Left
             desc.ZIndex = F.silZ(137); desc.Parent = row
         end
@@ -7221,13 +7288,13 @@ function Intro.startTour()
     local cardScale = Instance.new("UIScale")
     cardScale.Scale = Menu.current or 1
     cardScale.Parent = card
-    card.BackgroundColor3 = Color3.fromRGB(16, 15, 24)
+    card.BackgroundColor3 = Funk.PANEL
     card.BorderSizePixel = 0
     card.Active = true
     card.Draggable = true
     card.Parent = sg
-    F.uiCorner(card, UDim.new(0, 14))
-    F.uiStroke(card, Color3.fromRGB(255, 220, 90), 1.5).Transparency = 0.3
+    F.uiCorner(card, UDim.new(0, 4))
+    F.uiStroke(card, Funk.YELLOW, 2).Transparency = 0.05
 
     local tag = F.makeLabel(card, "QUICK TOUR", UDim2.new(0, 16, 0, 12), UDim2.new(0, 160, 0, 14),
         Color3.fromRGB(255, 220, 90), Enum.TextXAlignment.Left, 10)
@@ -7273,6 +7340,7 @@ function Intro.startTour()
         Color3.fromRGB(45, 40, 60), nil, 10)
     local nextB = F.makeBtn(card, "NEXT", UDim2.new(1, -100, 1, -32), UDim2.new(0, 84, 0, 24),
         Color3.fromRGB(255, 190, 60), Color3.fromRGB(20, 20, 25), 11)
+    Funk.skin(card)      -- the same font and colours as the panel
 
     local function show()
         local s = TOUR[Intro.step]
@@ -9575,35 +9643,30 @@ F.notify = function(text, kind)
         error   = Color3.fromRGB(255, 90, 90),
     }
     local toast = Instance.new("Frame")
-    toast.Size = UDim2.new(1, 0, 0, 38)
-    toast.BackgroundColor3 = Color3.fromRGB(30, 30, 45)
-    toast.BackgroundTransparency = 0.25
+    toast.Size = UDim2.new(1, 0, 0, 40)
+    toast.BackgroundColor3 = Funk.PANEL
+    toast.BackgroundTransparency = 0.06
     toast.BorderSizePixel = 0
     toast.ClipsDescendants = true
     toast.Parent = notifyContainer
-    local corner = Instance.new("UICorner"); corner.CornerRadius = UDim.new(0,12); corner.Parent = toast
-    local stroke = Instance.new("UIStroke"); stroke.Color = colors[kind] or colors.info; stroke.Thickness = 1; stroke.Transparency = 0.4; stroke.Parent = toast
+    local corner = Instance.new("UICorner"); corner.CornerRadius = UDim.new(0,4); corner.Parent = toast
+    local stroke = Instance.new("UIStroke"); stroke.Color = colors[kind] or colors.info; stroke.Thickness = 1.5; stroke.Transparency = 0.1; stroke.Parent = toast
 
     local tGrad = Instance.new("UIGradient")
-    tGrad.Color = ColorSequence.new(Color3.fromRGB(255,255,255), Color3.fromRGB(180,180,200))
-    tGrad.Transparency = NumberSequence.new({
-        NumberSequenceKeypoint.new(0, 0.88),
-        NumberSequenceKeypoint.new(0.4, 0.95),
-        NumberSequenceKeypoint.new(1, 0.92),
-    })
+    tGrad.Color = ColorSequence.new(Color3.fromRGB(255,255,255), Color3.fromRGB(150,140,200))
     tGrad.Rotation = 90; tGrad.Parent = toast
 
+    -- a solid bar in the toast's colour down its left edge
     local dot = Instance.new("Frame")
-    dot.Size = UDim2.new(0, 6, 0, 6); dot.Position = UDim2.new(0, 10, 0.5, -3)
+    dot.Size = UDim2.new(0, 5, 1, 0); dot.Position = UDim2.new(0, 0, 0, 0)
     dot.BackgroundColor3 = colors[kind] or colors.info
     dot.BorderSizePixel = 0; dot.Parent = toast
-    local dotCorner = Instance.new("UICorner"); dotCorner.CornerRadius = UDim.new(1,0); dotCorner.Parent = dot
 
     local lbl = Instance.new("TextLabel")
-    lbl.Size = UDim2.new(1, -28, 1, 0); lbl.Position = UDim2.new(0, 22, 0, 0)
+    lbl.Size = UDim2.new(1, -24, 1, 0); lbl.Position = UDim2.new(0, 16, 0, 0)
     lbl.BackgroundTransparency = 1; lbl.Text = text
-    lbl.TextColor3 = Color3.fromRGB(240,240,250); lbl.Font = Enum.Font.GothamMedium
-    lbl.TextSize = 11; lbl.TextXAlignment = Enum.TextXAlignment.Left
+    lbl.TextColor3 = Color3.fromRGB(242,240,255); lbl.FontFace = Funk.FONT
+    lbl.TextSize = 13; lbl.TextXAlignment = Enum.TextXAlignment.Left
     lbl.TextWrapped = true; lbl.Parent = toast
 
     toast.Position = UDim2.new(1, 20, 0, 0)
@@ -9658,21 +9721,9 @@ function F.setTheme(name)
     if not rgbCycleOn then
         F.applyThemeColors(THEMES[name].accent)
     end
-    -- Mono goes hard black with white hairlines, like the stage overlay
-    local mono = (name == "Mono")
-    local gui = PlayerGui:FindFirstChild("FNFInjectorGui")
-    local main = gui and gui:FindFirstChild("Main")
-    if main then
-        main.BackgroundColor3 = mono and Color3.new(0, 0, 0) or Color3.fromRGB(13, 12, 19)
-        main.BackgroundTransparency = mono and 0.02 or 0.04
-        for _, d in ipairs(main:GetDescendants()) do
-            if d:IsA("UIGradient") and d.Parent == main then
-                d.Enabled = not mono
-            elseif d:IsA("UIStroke") then
-                d.Thickness = mono and 1.6 or 1
-            end
-        end
-    end
+    -- Mono goes hard black with white edges, like the stage overlay; the
+    -- others keep the full Funkin' look with their own accent
+    pcall(Funk.applyTheme, name)
     F.notify("Theme set to "..name, "info")
 end
 
@@ -12338,6 +12389,752 @@ function F.setupCharacter(char)
 end
 
 -- ============================================================
+--  FUNKIN' SKIN — how the panel looks
+--  Paint only: fonts, colours, rims, the patterned backdrop and
+--  the little animations. No feature reads any of it back.
+--  Funk.skin(root) dresses a whole GUI tree, then keeps dressing
+--  whatever the tabs add to it later, so every tab still builds
+--  its controls exactly the way it always has:
+--    * every text is Zekton at its builder's size + 2 (Zekton runs
+--      ~20% narrower than Gotham, so that's the same width), and
+--      shrinks back toward the builder's size if it wouldn't fit
+--    * the old dark greys become indigos of the same depth, even
+--      when a toggle sets them again later
+--    * grey text turns lavender, white hairlines turn cyan, corners
+--      get squarer, and section titles get an ink outline
+-- ============================================================
+function Funk.rgb(c) return c.R * 255, c.G * 255, c.B * 255 end
+function Funk.lum(c) return 0.299 * c.R + 0.587 * c.G + 0.114 * c.B end
+
+-- the old panel's dark greys: (35,35,55), (25,35,48), (12,11,18)...
+function Funk.isDark(c)
+    local r, g, b = Funk.rgb(c)
+    local hi, lo = math.max(r, g, b), math.min(r, g, b)
+    return hi >= 8 and hi <= 100 and hi - lo <= 26 and b >= r - 6 and b >= g - 6
+end
+function Funk.indigo(c)
+    local r, g, b = Funk.rgb(c)
+    local t = math.clamp(((r + g + b) / 3 - 10) / 70, 0, 1)
+    return Funk.NAVY_LO:Lerp(Funk.NAVY_HI, t)
+end
+-- the old panel's grey text: (160,160,160), (130,130,150)...
+function Funk.isGrey(c)
+    local r, g, b = Funk.rgb(c)
+    local hi, lo = math.max(r, g, b), math.min(r, g, b)
+    return hi > 100 and hi <= 225 and hi - lo <= 26
+end
+function Funk.lavender(c)
+    local r, g, b = Funk.rgb(c)
+    local l = (r + g + b) / 3
+    return Color3.fromRGB(math.floor(l * 0.92 + 6), math.floor(l * 0.9 + 6), math.min(255, math.floor(l + 48)))
+end
+
+function Funk.isText(o)
+    return o:IsA("TextLabel") or o:IsA("TextButton") or o:IsA("TextBox")
+end
+
+-- An instance of this skin's own: dressed already, never re-dressed.
+function Funk.make(class, parent, props)
+    local o = Instance.new(class)
+    for k, v in pairs(props) do o[k] = v end
+    Funk.done[o] = true
+    if class == "UIStroke" then Funk.mine[o] = true end
+    o.Parent = parent
+    return o
+end
+
+-- ---------- text ----------
+function Funk.bump(s)
+    if s <= 0 or s >= 30 then return s end
+    return s + 2
+end
+
+-- A page's section title: a bold-ish, mostly-capitals line of 12+.
+function Funk.isTitle(o, bold)
+    if not o:IsA("TextLabel") then return false end
+    local s = Funk.base[o] or o.TextSize
+    if s < 12 or s >= 30 then return false end
+    local up, low = 0, 0
+    for ch in string.gmatch(o.Text, "%a") do
+        if string.upper(ch) == ch then up = up + 1 else low = low + 1 end
+    end
+    if up < 2 or up < (up + low) * 0.6 then return false end
+    return bold or (o.Parent ~= nil and Funk.pages[o.Parent] == true)
+end
+
+-- Shrink a text back toward its builder's size until it fits its box.
+-- False when the box hasn't been laid out yet (it's tried again later).
+function Funk.fit(o)
+    if not o.Parent or o.TextScaled or o:IsA("TextBox") then return true end
+    if o.AutomaticSize ~= Enum.AutomaticSize.None then return true end
+    local box = o.AbsoluteSize
+    if box.X < 2 or box.Y < 2 then return false end
+    local base = Funk.base[o] or o.TextSize
+    local s = o.TextSize
+    while s > base and not o.TextFits do
+        s = s - 1
+        Funk.wrote[o] = s
+        o.TextSize = s
+    end
+    return true
+end
+
+function Funk.queue(o)
+    if Funk.inQ[o] then return end
+    Funk.inQ[o] = true
+    table.insert(Funk.fitQ, o)
+end
+
+-- A couple of milliseconds of fitting per frame, so a big tab never hitches.
+function Funk.pump()
+    local q = Funk.fitQ
+    local n = #q
+    if n == 0 then return end
+    local t0, i = os.clock(), 0
+    while i < n do
+        i = i + 1
+        local o = q[i]
+        Funk.inQ[o] = nil
+        if o.Parent then
+            local ok, laid = pcall(Funk.fit, o)
+            if ok and not laid then Funk.parked[o] = true end
+        end
+        if os.clock() - t0 > 0.002 then break end
+    end
+    if i >= n then
+        Funk.fitQ = {}
+    else
+        local rest = {}
+        for j = i + 1, n do rest[#rest + 1] = q[j] end
+        Funk.fitQ = rest
+    end
+end
+
+function Funk.unpark()
+    for o in pairs(Funk.parked) do
+        Funk.parked[o] = nil
+        if o.Parent then Funk.queue(o) end
+    end
+end
+
+-- The size a text should be now; `now` fits it straight away (a text
+-- that just changed), otherwise it waits its turn in the queue.
+function Funk.size(o, now)
+    if o.TextScaled then return end
+    local base = Funk.base[o]
+    if not base then return end
+    local want = Funk.bump(base) + (Funk.head[o] and 1 or 0)
+    if o:IsA("TextBox") then want = math.min(want, base + 1) end
+    Funk.wrote[o] = want
+    if o.TextSize ~= want then o.TextSize = want end
+    if now then
+        if not Funk.fit(o) then Funk.parked[o] = true end
+    else
+        Funk.queue(o)
+    end
+end
+
+function Funk.dressText(o)
+    local bold = (o.Font == Enum.Font.GothamBold or o.Font == Enum.Font.GothamBlack)
+    if o.FontFace.Family ~= Funk.FAMILY then o.FontFace = Funk.FONT end
+    if Funk.base[o] == nil then Funk.base[o] = o.TextSize end
+    if not Funk.head[o] and Funk.isTitle(o, bold) then
+        Funk.head[o] = true
+        o.TextStrokeColor3 = Funk.INK
+        o.TextStrokeTransparency = 0.4
+    end
+    if Funk.isGrey(o.TextColor3) then o.TextColor3 = Funk.lavender(o.TextColor3) end
+    if o:IsA("TextBox") and Funk.isGrey(o.PlaceholderColor3) then
+        o.PlaceholderColor3 = Funk.lavender(o.PlaceholderColor3):Lerp(Funk.PANEL, 0.3)
+    end
+    Funk.size(o)
+end
+
+-- ---------- colour ----------
+function Funk.paintBg(o)
+    if Funk.isDark(o.BackgroundColor3) then
+        o.BackgroundColor3 = Funk.indigo(o.BackgroundColor3)
+    end
+    if Funk.edges[o] then Funk.btnState(o) end
+end
+
+-- A button's rim follows its colour: cyan at rest, white when it's lit
+-- (a toggle that's ON), yellow under the pointer.
+function Funk.btnState(b)
+    local edge = Funk.edges[b]
+    if not edge or not edge.Parent then return end
+    local glow = Funk.lum(b.BackgroundColor3)
+    local lit = glow > 0.3
+    if not Funk.hover[b] then
+        edge.Color = lit and Color3.new(1, 1, 1) or Funk.EDGE
+        edge.Transparency = lit and 0.1 or 0.45
+    end
+    -- light text on a very bright button (yellow, orange) turns ink; on a
+    -- bright one (pink, cyan, green) it gets an ink outline. It goes back to
+    -- the builder's own colour when the button goes dark again.
+    local own = Funk.txt[b]
+    if own == nil then own = b.TextColor3; Funk.txt[b] = own end
+    local want = (glow > 0.62 and Funk.lum(own) > 0.7) and Funk.INK or own
+    if b.TextColor3 ~= want then b.TextColor3 = want end
+    b.TextStrokeColor3 = Funk.INK
+    b.TextStrokeTransparency = (lit and Funk.lum(want) > 0.7) and 0.45 or 1
+end
+
+-- Keep an object dressed when its builder (or a toggle) changes it later.
+function Funk.hook(o)
+    if Funk.done[o] then return end
+    Funk.done[o] = true
+    o:GetPropertyChangedSignal("BackgroundColor3"):Connect(function() pcall(Funk.paintBg, o) end)
+    if not Funk.isText(o) then return end
+    local function refont()
+        if o.FontFace.Family ~= Funk.FAMILY then pcall(Funk.dressText, o) end
+    end
+    o:GetPropertyChangedSignal("FontFace"):Connect(refont)
+    pcall(function() o:GetPropertyChangedSignal("Font"):Connect(refont) end)   -- .Font = Enum.Font.X
+    o:GetPropertyChangedSignal("TextColor3"):Connect(function()
+        -- a colour the builder chose (not the ink this skin swaps in)
+        if Funk.edges[o] and o.TextColor3 ~= Funk.INK then Funk.txt[o] = o.TextColor3 end
+        if Funk.isGrey(o.TextColor3) then o.TextColor3 = Funk.lavender(o.TextColor3) end
+        if Funk.edges[o] then pcall(Funk.btnState, o) end
+    end)
+    o:GetPropertyChangedSignal("TextSize"):Connect(function()
+        if o.TextSize ~= Funk.wrote[o] then
+            Funk.base[o] = o.TextSize
+            pcall(Funk.size, o, true)
+        end
+    end)
+    o:GetPropertyChangedSignal("Text"):Connect(function()
+        if Funk.base[o] then pcall(Funk.size, o, true) end
+    end)
+end
+
+-- ---------- one instance ----------
+function Funk.skip(d)
+    for _, r in ipairs(Funk.noSkin) do
+        if d == r or d:IsDescendantOf(r) then return true end
+    end
+    return d:FindFirstAncestorWhichIsA("ViewportFrame") ~= nil
+end
+
+function Funk.one(d)
+    if Funk.done[d] or Funk.mine[d] or not d.Parent or Funk.skip(d) then return end
+    if d:IsA("UICorner") then
+        Funk.done[d] = true
+        local r = d.CornerRadius
+        if r.Scale == 0 and r.Offset > 5 then d.CornerRadius = UDim.new(0, 4) end
+        return
+    end
+    if d:IsA("UIStroke") then
+        Funk.done[d] = true
+        local c = d.Color
+        if c.R > 0.78 and c.G > 0.78 and c.B > 0.78 and d.Transparency >= 0.6 then
+            -- a white hairline: make it a cyan rim (and a rim, not a text outline)
+            d.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+            d.Color = Funk.EDGE
+            d.Transparency = math.min(d.Transparency, 0.6)
+        end
+        return
+    end
+    if not d:IsA("GuiObject") then return end
+    Funk.hook(d)
+    Funk.paintBg(d)
+    if Funk.isText(d) then Funk.dressText(d) end
+    if d:IsA("ScrollingFrame") and not Funk.pages[d] then
+        d.ScrollBarImageColor3 = Funk.YELLOW
+        if d.ScrollBarThickness > 0 and d.ScrollBarThickness < 4 then d.ScrollBarThickness = 4 end
+    end
+    if d:IsA("TextButton") and not Funk.edges[d] and d.BackgroundTransparency < 0.9
+        and not d:FindFirstChildOfClass("UIStroke") then
+        Funk.make("UIStroke", d, { ApplyStrokeMode = Enum.ApplyStrokeMode.Border,
+            Color = Funk.EDGE, Thickness = 1, Transparency = 0.6 })
+    end
+end
+
+function Funk.pend(d)
+    table.insert(Funk.pending, d)
+    if not Funk.flushing then
+        Funk.flushing = true
+        task.defer(Funk.flush)
+    end
+end
+function Funk.flush()
+    Funk.flushing = false
+    local list = Funk.pending
+    Funk.pending = {}
+    for _, d in ipairs(list) do pcall(Funk.one, d) end
+end
+
+-- Dress a whole tree now and everything added to it later. The extra
+-- arguments are parts of it to leave exactly as they are.
+function Funk.skin(root, ...)
+    local keep = {}
+    for _, r in ipairs(Funk.noSkin) do if r.Parent then table.insert(keep, r) end end
+    for _, r in ipairs({ ... }) do if r then table.insert(keep, r) end end
+    Funk.noSkin = keep
+    for _, d in ipairs(root:GetDescendants()) do pcall(Funk.one, d) end
+    root.DescendantAdded:Connect(Funk.pend)
+end
+
+-- ---------- buttons ----------
+-- A yellow ring that pops out from a button you press.
+function Funk.ripple(b)
+    local r = Funk.make("Frame", nil, {
+        Name = "Ripple", AnchorPoint = Vector2.new(0.5, 0.5),
+        Position = UDim2.new(0.5, 0, 0.5, 0), Size = UDim2.new(1, 0, 1, 0),
+        BackgroundTransparency = 1, BorderSizePixel = 0,
+    })
+    local s = Funk.make("UIStroke", r, { Color = Funk.YELLOW, Thickness = 2, Transparency = 0.1 })
+    Funk.make("UICorner", r, { CornerRadius = UDim.new(0, 4) })
+    r.Parent = b
+    local ti = TweenInfo.new(0.32, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+    TweenService:Create(r, ti, { Size = UDim2.new(1, 12, 1, 10) }):Play()
+    TweenService:Create(s, ti, { Transparency = 1 }):Play()
+    task.delay(0.36, function() r:Destroy() end)
+end
+
+-- The arcade-key look for F.makeBtn: square-ish, shaded top to bottom,
+-- a shine along the top and a rim that lights up.
+function Funk.dressBtn(b)
+    Funk.make("UICorner", b, { CornerRadius = UDim.new(0, 3) })
+    local edge = Funk.make("UIStroke", b, { ApplyStrokeMode = Enum.ApplyStrokeMode.Border,
+        Thickness = 1.5, Color = Funk.EDGE, Transparency = 0.45 })
+    Funk.edges[b] = edge
+    Funk.make("UIGradient", b, { Rotation = 90,
+        Color = ColorSequence.new(Color3.fromRGB(255, 255, 255), Color3.fromRGB(196, 190, 226)) })
+    Funk.make("Frame", b, { Name = "Shine", Size = UDim2.new(1, -6, 0, 1), Position = UDim2.new(0, 3, 0, 2),
+        BackgroundColor3 = Color3.new(1, 1, 1), BackgroundTransparency = 0.72, BorderSizePixel = 0 })
+    local glow = Funk.make("Frame", b, { Name = "Glow", Size = UDim2.new(1, 0, 1, 0),
+        BackgroundColor3 = Color3.new(1, 1, 1), BackgroundTransparency = 1, BorderSizePixel = 0 })
+    Funk.make("UICorner", glow, { CornerRadius = UDim.new(0, 3) })
+
+    local fast = TweenInfo.new(0.12, Enum.EasingStyle.Quad)
+    local slow = TweenInfo.new(0.22, Enum.EasingStyle.Quad)
+    b.MouseEnter:Connect(function()
+        Funk.hover[b] = true
+        TweenService:Create(edge, fast, { Color = Funk.YELLOW, Transparency = 0 }):Play()
+        TweenService:Create(glow, fast, { BackgroundTransparency = 0.9 }):Play()
+    end)
+    b.MouseLeave:Connect(function()
+        Funk.hover[b] = nil
+        local lit = Funk.lum(b.BackgroundColor3) > 0.3
+        TweenService:Create(edge, slow, { Color = lit and Color3.new(1, 1, 1) or Funk.EDGE,
+            Transparency = lit and 0.1 or 0.45 }):Play()
+        TweenService:Create(glow, slow, { BackgroundTransparency = 1 }):Play()
+    end)
+    b.MouseButton1Down:Connect(function()
+        glow.BackgroundTransparency = 0.6
+        TweenService:Create(glow, TweenInfo.new(0.3, Enum.EasingStyle.Quad),
+            { BackgroundTransparency = Funk.hover[b] and 0.9 or 1 }):Play()
+        Funk.ripple(b)
+    end)
+end
+
+-- ---------- the window ----------
+-- Dots that shrink the further they sit from `origin` (grid cells).
+function Funk.halftone(parent, anchor, origin, cols, rows, col, tr)
+    local STEP, BIG = 12, 7
+    local holder = Funk.make("Frame", parent, {
+        Name = "Halftone", BackgroundTransparency = 1, AnchorPoint = anchor,
+        Position = UDim2.new(anchor.X, 0, anchor.Y, 0),
+        Size = UDim2.new(0, cols * STEP, 0, rows * STEP), ZIndex = 0,
+    })
+    local reach = math.sqrt(cols * cols + rows * rows) * 0.62
+    for gx = 0, cols - 1 do
+        for gy = 0, rows - 1 do
+            local d = math.sqrt((gx - origin.X) ^ 2 + (gy - origin.Y) ^ 2)
+            local size = BIG * (1 - d / reach)
+            if size >= 1.6 then
+                local dot = Funk.make("Frame", holder, {
+                    AnchorPoint = Vector2.new(0.5, 0.5),
+                    Position = UDim2.new(0, gx * STEP + STEP / 2 + (gy % 2) * STEP / 2, 0, gy * STEP + STEP / 2),
+                    Size = UDim2.new(0, size, 0, size),
+                    BackgroundColor3 = col, BackgroundTransparency = tr, BorderSizePixel = 0, ZIndex = 0,
+                })
+                Funk.make("UICorner", dot, { CornerRadius = UDim.new(1, 0) })
+            end
+        end
+    end
+    return holder
+end
+
+-- The window itself: a rim in every colour that slowly turns, indigo lit
+-- purple from the top left, halftone dots, speed stripes, a graffiti tag
+-- and arrow stickers, all faint enough to read over.
+function Funk.dressMain(main)
+    Funk.main = main
+    main.BackgroundColor3 = Color3.new(1, 1, 1)   -- the gradient below carries the colour
+    local rim = Funk.make("UIStroke", main, { Name = "FunkRim", Thickness = 2.5, Color = Color3.new(1, 1, 1),
+        Transparency = 0, ApplyStrokeMode = Enum.ApplyStrokeMode.Border })
+    Funk.rim = rim
+    Funk.rimGrad = Funk.make("UIGradient", rim, { Color = ColorSequence.new({
+        ColorSequenceKeypoint.new(0,    Funk.CYAN),
+        ColorSequenceKeypoint.new(0.25, Funk.PURPLE),
+        ColorSequenceKeypoint.new(0.5,  Funk.PINK),
+        ColorSequenceKeypoint.new(0.75, Funk.YELLOW),
+        ColorSequenceKeypoint.new(1,    Funk.CYAN),
+    }) })
+    Funk.bodyGrad = Funk.make("UIGradient", main, { Name = "FunkBody", Rotation = 115, Color = ColorSequence.new({
+        ColorSequenceKeypoint.new(0,    Color3.fromRGB(58, 24, 128)),
+        ColorSequenceKeypoint.new(0.45, Color3.fromRGB(24, 14, 70)),
+        ColorSequenceKeypoint.new(1,    Color3.fromRGB(10, 6, 34)),
+    }) })
+
+    local pat = Funk.make("Frame", main, { Name = "FunkPattern", Size = UDim2.new(1, 0, 1, 0),
+        BackgroundTransparency = 1, ZIndex = 0 })
+    Funk.pattern = pat
+    Funk.halftone(pat, Vector2.new(1, 1), Vector2.new(13, 12), 14, 13, Funk.CYAN, 0.8)     -- bottom right
+    Funk.halftone(pat, Vector2.new(0, 0.42), Vector2.new(0, 6), 12, 13, Funk.PINK, 0.84)   -- left side
+    for i = 1, 5 do
+        Funk.make("Frame", pat, {
+            AnchorPoint = Vector2.new(0.5, 0.5), Size = UDim2.new(0, 900, 0, 10 + i * 5),
+            Position = UDim2.new(0.5, 0, 0, 250 + i * 50), Rotation = -24,
+            BackgroundColor3 = (i % 2 == 0) and Funk.PURPLE or Funk.CYAN,
+            BackgroundTransparency = 0.95, BorderSizePixel = 0, ZIndex = 0,
+        })
+    end
+    Funk.make("TextLabel", pat, {
+        Name = "Tag", BackgroundTransparency = 1, AnchorPoint = Vector2.new(0, 1),
+        Size = UDim2.new(0, 320, 0, 96), Position = UDim2.new(0, -4, 1, 4), Rotation = -8,
+        Text = "FUNKIN'", FontFace = Funk.TAG, TextSize = 76,
+        TextColor3 = Funk.PINK, TextTransparency = 0.86, ZIndex = 0,
+    })
+    for _, s in ipairs({
+        { "◄", Funk.PINK,  0.86, 0.30, 62, -12 },
+        { "▼", Funk.CYAN,  0.10, 0.66, 48,   8 },
+        { "▲", Funk.GREEN, 0.90, 0.62, 52,  14 },
+        { "►", Funk.RED,   0.58, 0.95, 42,  -6 },
+        { "♪", Funk.YELLOW, 0.38, 0.45, 44, -10 },
+    }) do
+        Funk.make("TextLabel", pat, {
+            BackgroundTransparency = 1, AnchorPoint = Vector2.new(0.5, 0.5),
+            Size = UDim2.new(0, 80, 0, 80), Position = UDim2.new(s[3], 0, s[4], 0), Rotation = s[6],
+            Text = s[1], FontFace = Funk.FONT, TextSize = s[5],
+            TextColor3 = s[2], TextTransparency = 0.86, ZIndex = 0,
+        })
+    end
+    return pat
+end
+
+-- The title bar: the menu's yellow with diagonal stripes, a shine that
+-- sweeps across now and then, an ink edge, the four note colours as a
+-- logo, the title (it bumps to the beat) and a version sticker.
+function Funk.dressTitle(bar)
+    Funk.titleBar = bar
+    bar.BackgroundColor3 = Funk.MENU
+    bar.BackgroundTransparency = 0
+    Funk.done[bar] = true
+    Funk.make("UICorner", bar, { CornerRadius = UDim.new(0, 6) })
+    local clip = Funk.make("Frame", bar, { Name = "Stripes", Size = UDim2.new(1, 0, 1, 0),
+        BackgroundTransparency = 1, ClipsDescendants = true, ZIndex = 0 })
+    Funk.stripes = clip
+    for i = 0, 15 do
+        Funk.make("Frame", clip, {
+            AnchorPoint = Vector2.new(0.5, 0.5), Size = UDim2.new(0, 12, 0, 90),
+            Position = UDim2.new(0, i * 34, 0.5, 0), Rotation = 30,
+            BackgroundColor3 = Color3.fromRGB(255, 186, 40), BackgroundTransparency = 0.55,
+            BorderSizePixel = 0, ZIndex = 0,
+        })
+    end
+    local sheen = Funk.make("Frame", clip, {
+        Name = "Sheen", AnchorPoint = Vector2.new(0.5, 0.5), Size = UDim2.new(0, 46, 0, 90),
+        Position = UDim2.new(0, -80, 0.5, 0), Rotation = 30, Visible = false,
+        BackgroundColor3 = Color3.new(1, 1, 1), BackgroundTransparency = 0.35, BorderSizePixel = 0, ZIndex = 0,
+    })
+    Funk.make("UIGradient", sheen, { Transparency = NumberSequence.new({
+        NumberSequenceKeypoint.new(0, 1), NumberSequenceKeypoint.new(0.5, 0.2), NumberSequenceKeypoint.new(1, 1),
+    }) })
+    Funk.sheen = sheen
+    Funk.make("Frame", bar, { Name = "Ink", Size = UDim2.new(1, 0, 0, 3), Position = UDim2.new(0, 0, 1, -3),
+        BackgroundColor3 = Funk.INK, BorderSizePixel = 0 })
+
+    local logo = Funk.make("Frame", bar, { Name = "Logo", Size = UDim2.new(0, 13, 0, 13),
+        Position = UDim2.new(0, 12, 0.5, -8), BackgroundTransparency = 1 })
+    for i, col in ipairs({ Funk.PINK, Funk.CYAN, Funk.GREEN, Funk.RED }) do
+        local q = Funk.make("Frame", logo, { Size = UDim2.new(0, 6, 0, 6),
+            Position = UDim2.new(0, ((i - 1) % 2) * 7, 0, math.floor((i - 1) / 2) * 7),
+            BackgroundColor3 = col, BorderSizePixel = 0 })
+        Funk.make("UIStroke", q, { Color = Funk.INK, Thickness = 1, Transparency = 0.2 })
+    end
+
+    local title = Funk.make("TextLabel", bar, {
+        Name = "Title", AnchorPoint = Vector2.new(0, 0.5), Position = UDim2.new(0, 32, 0.5, -1),
+        Size = UDim2.new(0, 176, 0, 26), BackgroundTransparency = 1, RichText = true,
+        Text = '<font color="#7a2cf0">FNF</font> ANIM INJECTOR', TextColor3 = Funk.INK,
+        FontFace = Funk.FONT, TextSize = 17, TextXAlignment = Enum.TextXAlignment.Left,
+    })
+    Funk.titleText = title
+    Funk.titleScale = Funk.make("UIScale", title, {})
+    local ver = Funk.make("TextLabel", bar, {
+        Name = "Version", AnchorPoint = Vector2.new(0, 0.5), Position = UDim2.new(0, 214, 0.5, -1),
+        Size = UDim2.new(0, 48, 0, 18), Rotation = -6, BackgroundColor3 = Funk.INK,
+        Text = "v" .. INJECTOR_VERSION, TextColor3 = Funk.CYAN, FontFace = Funk.FONT, TextSize = 12,
+    })
+    Funk.make("UICorner", ver, { CornerRadius = UDim.new(0, 2) })
+    return title
+end
+
+-- A thin line in every colour, across the window at y.
+function Funk.rule(main, y)
+    local l = Funk.make("Frame", main, { Name = "FunkRule", Size = UDim2.new(1, 0, 0, 2),
+        Position = UDim2.new(0, 0, 0, y), BackgroundColor3 = Color3.new(1, 1, 1), BorderSizePixel = 0, ZIndex = 3 })
+    Funk.make("UIGradient", l, { Color = ColorSequence.new({
+        ColorSequenceKeypoint.new(0,   Funk.CYAN),
+        ColorSequenceKeypoint.new(0.5, Funk.PURPLE),
+        ColorSequenceKeypoint.new(1,   Funk.PINK),
+    }) })
+    return l
+end
+
+-- ---------- tabs ----------
+function Funk.tabLabel(name)
+    return (string.gsub(name, "^[^%w]+", ""))   -- "💨 FALL" -> "FALL"
+end
+
+function Funk.dressTab(tb, i)
+    local col = Funk.TAB_COLORS[(i - 1) % #Funk.TAB_COLORS + 1]
+    Funk.done[tb] = true
+    tb.FontFace = Funk.FONT
+    tb.TextSize = 13
+    tb.TextStrokeColor3 = Funk.INK
+    Funk.make("UICorner", tb, { CornerRadius = UDim.new(0, 3) })
+    Funk.make("UIGradient", tb, { Rotation = 90,
+        Color = ColorSequence.new(Color3.fromRGB(255, 255, 255), Color3.fromRGB(205, 200, 230)) })
+    -- the rim sits on a child, so the tour's pulse ring can still go on the tab
+    local holder = Funk.make("Frame", tb, { Name = "Edge", Size = UDim2.new(1, 0, 1, 0), BackgroundTransparency = 1 })
+    Funk.make("UICorner", holder, { CornerRadius = UDim.new(0, 3) })
+    local edge = Funk.make("UIStroke", holder, { ApplyStrokeMode = Enum.ApplyStrokeMode.Border,
+        Color = col, Thickness = 1.2, Transparency = 0.55 })
+    local st = { col = col, edge = edge, scale = Funk.make("UIScale", tb, {}), active = false, hover = false }
+    Funk.tabs[tb] = st
+    tb.MouseEnter:Connect(function() st.hover = true; Funk.paintTab(tb, st.active) end)
+    tb.MouseLeave:Connect(function() st.hover = false; Funk.paintTab(tb, st.active) end)
+    tb.MouseButton1Down:Connect(function() Funk.ripple(tb) end)
+end
+
+-- The tab you're on lights up in its colour with ink letters and bumps
+-- to the beat; the rest sit dark with their colour on the rim.
+function Funk.paintTab(tb, active, instant)
+    local st = Funk.tabs[tb]
+    if not st then return end
+    st.active = active
+    local bg, bgT, txt, txtS, edgeC, edgeT, edgeW
+    if active then
+        bg, bgT, txt, txtS = st.col, 0, Funk.INK, 1
+        edgeC, edgeT, edgeW = Color3.new(1, 1, 1), 0, 2
+        Funk.activeScale = st.scale
+    else
+        if Funk.activeScale == st.scale then Funk.activeScale = nil end
+        st.scale.Scale = 1
+        if st.hover then
+            bg, bgT, txt, txtS = Funk.NAVY_HI, 0.05, Color3.new(1, 1, 1), 0.6
+            edgeC, edgeT, edgeW = st.col, 0, 1.5
+        else
+            bg, bgT, txt, txtS = Funk.NAVY_LO:Lerp(Funk.NAVY_HI, 0.35), 0.15, Color3.fromRGB(190, 184, 240), 1
+            edgeC, edgeT, edgeW = st.col, 0.55, 1.2
+        end
+    end
+    tb.TextStrokeTransparency = txtS
+    if instant then
+        tb.BackgroundColor3, tb.BackgroundTransparency, tb.TextColor3 = bg, bgT, txt
+        st.edge.Color, st.edge.Transparency, st.edge.Thickness = edgeC, edgeT, edgeW
+    else
+        local ti = TweenInfo.new(0.18, Enum.EasingStyle.Quad)
+        TweenService:Create(tb, ti, { BackgroundColor3 = bg, BackgroundTransparency = bgT, TextColor3 = txt }):Play()
+        TweenService:Create(st.edge, ti, { Color = edgeC, Transparency = edgeT, Thickness = edgeW }):Play()
+    end
+end
+
+-- ---------- pages ----------
+-- A page slides in from the right while a light sweeps across.
+function Funk.enterPage(page)
+    local ti = TweenInfo.new(0.24, Enum.EasingStyle.Quint, Enum.EasingDirection.Out)
+    page.Position = UDim2.new(0, 16, 0, 0)
+    TweenService:Create(page, ti, { Position = UDim2.new(0, 0, 0, 0) }):Play()
+    local bd = Funk.backs[page]
+    if bd then
+        bd.Position = UDim2.new(0, 16, 0, 0)
+        TweenService:Create(bd, ti, { Position = UDim2.new(0, 0, 0, 0) }):Play()
+    end
+    local sw = Funk.sweep
+    if sw and sw.Parent then
+        sw.Visible = true
+        sw.Position = UDim2.new(0, -70, 0, 0)
+        local tw = TweenService:Create(sw, TweenInfo.new(0.32, Enum.EasingStyle.Quad), { Position = UDim2.new(1, 10, 0, 0) })
+        tw.Completed:Connect(function() sw.Visible = false end)
+        tw:Play()
+    end
+    Funk.unpark()
+    Funk.markSections(page)
+end
+
+function Funk.makeSweep(area)
+    local sw = Funk.make("Frame", area, { Name = "FunkSweep", Size = UDim2.new(0, 60, 1, 0),
+        BackgroundColor3 = Funk.YELLOW, BackgroundTransparency = 0, BorderSizePixel = 0, ZIndex = 5, Visible = false })
+    Funk.make("UIGradient", sw, { Transparency = NumberSequence.new({
+        NumberSequenceKeypoint.new(0, 1), NumberSequenceKeypoint.new(0.5, 0.82), NumberSequenceKeypoint.new(1, 1),
+    }) })
+    Funk.sweep = sw
+end
+
+-- Each page gets a frame behind it for its section panels. It scrolls
+-- with the page and shows only with it. Nothing is put inside the page.
+function Funk.addBack(page, area)
+    local bd = Funk.make("Frame", area, { Name = "FunkBack", Size = UDim2.new(1, 0, 1, 0),
+        BackgroundTransparency = 1, ClipsDescendants = true, ZIndex = 1, Visible = page.Visible })
+    local holder = Funk.make("Frame", bd, { Name = "Panels", Size = UDim2.new(1, 0, 0, 0), BackgroundTransparency = 1 })
+    Funk.backs[page] = bd
+    table.insert(Funk.noSkin, bd)
+    page:GetPropertyChangedSignal("CanvasPosition"):Connect(function()
+        holder.Position = UDim2.new(0, 0, 0, -page.CanvasPosition.Y)
+    end)
+    page:GetPropertyChangedSignal("Visible"):Connect(function()
+        bd.Visible = page.Visible
+        if page.Visible then Funk.markSections(page) end
+    end)
+    page:GetPropertyChangedSignal("AbsoluteCanvasSize"):Connect(function() Funk.markSections(page) end)
+    local function watch(c)
+        if not Funk.dividers[c] then return end
+        c:GetPropertyChangedSignal("Position"):Connect(function() Funk.markSections(page) end)
+        c:GetPropertyChangedSignal("Visible"):Connect(function() Funk.markSections(page) end)
+        Funk.markSections(page)
+    end
+    for _, c in ipairs(page:GetChildren()) do watch(c) end
+    page.ChildAdded:Connect(watch)
+    page.ChildRemoved:Connect(function(c) if Funk.dividers[c] then Funk.markSections(page) end end)
+    Funk.markSections(page)
+end
+
+function Funk.markSections(page)
+    if Funk.dirty[page] then return end
+    Funk.dirty[page] = true
+    task.delay(0.06, function()
+        Funk.dirty[page] = nil
+        if page.Parent and page.Visible then pcall(Funk.buildSections, page) end
+    end)
+end
+
+-- One panel per section: from its divider down to the next one. The part
+-- above the first divider (the tab's own title and main switch) gets a
+-- yellow one.
+function Funk.buildSections(page)
+    local bd = Funk.backs[page]
+    local holder = bd and bd:FindFirstChild("Panels")
+    if not holder then return end
+    local sc = (Menu.scaleObj and Menu.scaleObj.Parent and Menu.scaleObj.Scale) or 1
+    local divs, bottom = {}, 0
+    for _, c in ipairs(page:GetChildren()) do
+        if c:IsA("GuiObject") and c.Visible then
+            if Funk.dividers[c] then
+                table.insert(divs, c)
+            else
+                local y = c.Position.Y.Offset + c.AbsoluteSize.Y / sc
+                if y > bottom then bottom = y end
+            end
+        end
+    end
+    table.sort(divs, function(a, b) return a.Position.Y.Offset < b.Position.Y.Offset end)
+
+    local tops = {}
+    local first = divs[1] and divs[1].Position.Y.Offset or math.huge
+    if first > 44 then table.insert(tops, { y = 4, col = Funk.YELLOW }) end
+    for i, d in ipairs(divs) do
+        local y = d.Position.Y.Offset - 3
+        if i == 1 and first <= 44 then y = 4 end    -- a title sits above its first divider: keep them together
+        table.insert(tops, { y = y, col = d.BackgroundColor3 })
+    end
+    local list, sig = {}, { Funk.mono and "m" or "c" }
+    for i, s in ipairs(tops) do
+        local nextY = tops[i + 1] and tops[i + 1].y or (bottom + 8)
+        local h = math.floor(nextY - s.y - 5)
+        if h > 14 then
+            table.insert(list, { y = s.y, h = h, col = s.col })
+            table.insert(sig, string.format("%.1f:%d:%s", s.y, h, tostring(s.col)))
+        end
+    end
+    sig = table.concat(sig, "|")
+    if Funk.sig[page] == sig then return end
+    Funk.sig[page] = sig
+
+    holder:ClearAllChildren()
+    for n, s in ipairs(list) do Funk.panel(holder, s.y, s.h, s.col, n) end
+end
+
+function Funk.panel(holder, y, h, col, n)
+    local p = Funk.make("Frame", holder, { Name = "Section" .. n,
+        Position = UDim2.new(0, 3, 0, y), Size = UDim2.new(1, -11, 0, h),
+        BackgroundColor3 = Funk.mono and Color3.new(0, 0, 0) or Funk.PANEL,
+        BackgroundTransparency = 0.22, BorderSizePixel = 0 })
+    Funk.make("UICorner", p, { CornerRadius = UDim.new(0, 4) })
+    Funk.make("UIStroke", p, { ApplyStrokeMode = Enum.ApplyStrokeMode.Border, Color = col, Thickness = 1.5, Transparency = 0.3 })
+    -- the section's colour behind its title, fading out to the right
+    local band = Funk.make("Frame", p, { Name = "Band", Size = UDim2.new(1, 0, 0, math.min(28, h)),
+        BackgroundColor3 = col, BackgroundTransparency = 0.8, BorderSizePixel = 0 })
+    Funk.make("UICorner", band, { CornerRadius = UDim.new(0, 4) })
+    Funk.make("UIGradient", band, { Transparency = NumberSequence.new({
+        NumberSequenceKeypoint.new(0, 0), NumberSequenceKeypoint.new(0.75, 0.9), NumberSequenceKeypoint.new(1, 1),
+    }) })
+    -- a solid marker on the left edge
+    Funk.make("Frame", p, { Name = "Mark", Size = UDim2.new(0, 3, 0, math.min(18, h - 6)),
+        Position = UDim2.new(0, 0, 0, 5), BackgroundColor3 = col, BorderSizePixel = 0 })
+    return p
+end
+
+-- ---------- motion ----------
+-- One loop: the rim turns, the title and the tab you're on bump to the
+-- idle BPM, the title's shine sweeps by, and texts get fitted.
+function Funk.startLoop()
+    if Funk.loop then Funk.loop:Disconnect(); Funk.loop = nil end
+    local lastUnpark = 0
+    Funk.loop = F.own(RunService.Heartbeat:Connect(function(dt)
+        local main = Funk.main
+        if not main or not main.Parent then return end
+        Funk.pump()
+        if not main.Visible then return end
+        local t = Funk.t + dt
+        Funk.t = t
+        if t - lastUnpark > 0.5 then lastUnpark = t; Funk.unpark() end
+        if Funk.rimGrad and not Funk.mono then Funk.rimGrad.Rotation = (t * 30) % 360 end
+        local bpm = math.clamp(tonumber(idleBPM) or 100, 40, 260)
+        local k = (1 - (os.clock() * bpm / 60) % 1) ^ 4
+        if Funk.titleScale then Funk.titleScale.Scale = 1 + 0.05 * k end
+        if Funk.activeScale then Funk.activeScale.Scale = 1 + 0.04 * k end
+        local sh = Funk.sheen
+        if sh and sh.Parent then
+            local p = (t % 4.5) / 1.1
+            if p <= 1 and not Funk.mono then
+                sh.Visible = true
+                sh.Position = UDim2.new(p, -80 + p * 160, 0.5, 0)
+            elseif sh.Visible then
+                sh.Visible = false
+            end
+        end
+    end))
+end
+
+-- Mono: hard black with white edges, no pattern. Every other theme keeps
+-- the full look and only changes the accent.
+function Funk.applyTheme(name)
+    local mono = (name == "Mono")
+    Funk.mono = mono
+    local main = Funk.main
+    if not main or not main.Parent then return end
+    main.BackgroundColor3 = mono and Color3.new(0, 0, 0) or Color3.new(1, 1, 1)
+    if Funk.bodyGrad then Funk.bodyGrad.Enabled = not mono end
+    if Funk.pattern then Funk.pattern.Visible = not mono end
+    if Funk.rimGrad then Funk.rimGrad.Enabled = not mono end
+    if Funk.rim then Funk.rim.Thickness = mono and 1.6 or 2.5 end
+    if Funk.titleBar and Funk.titleBar.Parent then
+        Funk.titleBar.BackgroundColor3 = mono and Color3.new(0, 0, 0) or Funk.MENU
+        if Funk.stripes then Funk.stripes.Visible = not mono end
+        if Funk.titleText then Funk.titleText.TextColor3 = mono and Color3.new(1, 1, 1) or Funk.INK end
+    end
+    for page in pairs(Funk.backs) do
+        Funk.sig[page] = nil
+        Funk.markSections(page)
+    end
+end
+
+-- ============================================================
 --  UI HELPER FUNCTIONS
 -- ============================================================
 function F.uiCorner(p, r)
@@ -12356,96 +13153,89 @@ function F.makeLabel(parent, text, pos, size, color, xAlign, ts)
     local l = Instance.new("TextLabel")
     l.Size = size; l.Position = pos; l.BackgroundTransparency = 1
     l.Text = text; l.TextColor3 = color or Color3.fromRGB(210,210,225)
-    l.TextSize = ts or 11; l.Font = Enum.Font.GothamMedium
+    l.TextSize = ts or 11; l.FontFace = Funk.FONT
     l.TextXAlignment = xAlign or Enum.TextXAlignment.Center
-    l.Parent = parent; return l
+    l.Parent = parent
+    pcall(Funk.hook, l); pcall(Funk.dressText, l)
+    return l
 end
+-- Arcade-key buttons (Funk.dressBtn): square-ish, shaded, a rim that's
+-- cyan at rest, white when the button is lit, yellow under the pointer,
+-- and a flash and a ring when you press.
 function F.makeBtn(parent, text, pos, size, bg, tc, ts)
     local b = Instance.new("TextButton")
     b.Size = size; b.Position = pos
     b.BackgroundColor3 = bg or Color3.fromRGB(38, 36, 52)
-    b.BackgroundTransparency = 0.08
+    b.BackgroundTransparency = 0.04
     b.Text = text; b.TextColor3 = tc or Color3.fromRGB(238, 238, 248)
-    b.Font = Enum.Font.GothamMedium; b.TextSize = ts or 12
+    b.FontFace = Funk.FONT; b.TextSize = ts or 12
     b.BorderSizePixel = 0; b.Parent = parent; b.AutoButtonColor = false
-    F.uiCorner(b, UDim.new(0, 8))
-
-    -- single hairline, no heavy gradient stack
-    local edge = F.uiStroke(b, Color3.fromRGB(255, 255, 255), 1)
-    edge.Transparency = 0.86
-
-    -- thin accent bar down the left edge
-    local tab = Instance.new("Frame")
-    tab.Size = UDim2.new(0, 2, 1, -10); tab.Position = UDim2.new(0, 0, 0, 5)
-    tab.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-    tab.BackgroundTransparency = 0.75
-    tab.BorderSizePixel = 0; tab.Parent = b
-    F.uiCorner(tab, UDim.new(1, 0))
-
-    local baseSize = size
-    b.MouseEnter:Connect(function()
-        TweenService:Create(b, TweenInfo.new(0.13, Enum.EasingStyle.Quad), {
-            BackgroundTransparency = 0
-        }):Play()
-        TweenService:Create(edge, TweenInfo.new(0.13), { Transparency = 0.55 }):Play()
-        TweenService:Create(tab, TweenInfo.new(0.13), { BackgroundTransparency = 0.15 }):Play()
-    end)
-    b.MouseLeave:Connect(function()
-        TweenService:Create(b, TweenInfo.new(0.18, Enum.EasingStyle.Quad), {
-            BackgroundTransparency = 0.08, Size = baseSize
-        }):Play()
-        TweenService:Create(edge, TweenInfo.new(0.18), { Transparency = 0.86 }):Play()
-        TweenService:Create(tab, TweenInfo.new(0.18), { BackgroundTransparency = 0.75 }):Play()
-    end)
-    b.MouseButton1Down:Connect(function()
-        TweenService:Create(b, TweenInfo.new(0.05), {
-            Size = UDim2.new(baseSize.X.Scale, baseSize.X.Offset - 3,
-                             baseSize.Y.Scale, baseSize.Y.Offset - 2)
-        }):Play()
-    end)
-    b.MouseButton1Up:Connect(function()
-        TweenService:Create(b, TweenInfo.new(0.12, Enum.EasingStyle.Back), { Size = baseSize }):Play()
-    end)
-
+    pcall(Funk.dressBtn, b)
+    pcall(Funk.hook, b)
+    pcall(Funk.paintBg, b)
+    pcall(Funk.dressText, b)
     return b
 end
+-- A section's divider: a 2px line in the section's colour, fading out to
+-- the right. Its section panel is drawn from it (Funk.buildSections).
 function F.makeDivider(parent, yPos, color)
-    local d = Instance.new("Frame"); d.Size = UDim2.new(1,-24,0,1)
+    local d = Instance.new("Frame"); d.Size = UDim2.new(1,-24,0,2)
     d.Position = UDim2.new(0,12,0,yPos)
-    d.BackgroundColor3 = color or Color3.fromRGB(255,255,255)
-    d.BackgroundTransparency = 0.88
-    d.BorderSizePixel = 0; d.Parent = parent
+    d.BackgroundColor3 = color or Funk.EDGE
+    d.BackgroundTransparency = 0.1
+    d.BorderSizePixel = 0
+    local g = Instance.new("UIGradient")
+    g.Transparency = NumberSequence.new({
+        NumberSequenceKeypoint.new(0, 0), NumberSequenceKeypoint.new(0.6, 0.5), NumberSequenceKeypoint.new(1, 1),
+    })
+    g.Parent = d
+    Funk.dividers[d] = true
+    Funk.done[d] = true
+    d.Parent = parent
     return d
 end
 function F.makeBox(parent, pos, size, placeholder, default)
     local b = Instance.new("TextBox")
     b.Size = size; b.Position = pos
-    b.BackgroundColor3 = Color3.fromRGB(12, 11, 18)
-    b.BackgroundTransparency = 0.25
+    b.BackgroundColor3 = Funk.INK
+    b.BackgroundTransparency = 0.15
     b.PlaceholderText = placeholder or ""
-    b.PlaceholderColor3 = Color3.fromRGB(105, 105, 125)
+    b.PlaceholderColor3 = Color3.fromRGB(118, 110, 172)
     b.Text = default or ""; b.TextColor3 = Color3.fromRGB(240, 240, 250)
-    b.ClearTextOnFocus = false; b.Font = Enum.Font.Gotham; b.TextSize = 11
+    b.ClearTextOnFocus = false; b.FontFace = Funk.FONT; b.TextSize = 11
     b.BorderSizePixel = 0
-    b.Parent = parent; F.uiCorner(b, UDim.new(0, 6))
+    b.Parent = parent; F.uiCorner(b, UDim.new(0, 3))
 
     local pad = Instance.new("UIPadding")
     pad.PaddingLeft = UDim.new(0, 8); pad.PaddingRight = UDim.new(0, 8)
     pad.Parent = b
 
-    local edge = F.uiStroke(b, Color3.fromRGB(255, 255, 255), 1)
-    edge.Transparency = 0.88
+    local edge = Instance.new("UIStroke")
+    edge.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+    edge.Color = Funk.EDGE; edge.Thickness = 1; edge.Transparency = 0.55
+    Funk.mine[edge] = true
+    edge.Parent = b
 
+    local focused = false
+    b.MouseEnter:Connect(function()
+        if not focused then TweenService:Create(edge, TweenInfo.new(0.12), { Transparency = 0.15 }):Play() end
+    end)
+    b.MouseLeave:Connect(function()
+        if not focused then TweenService:Create(edge, TweenInfo.new(0.18), { Transparency = 0.55 }):Play() end
+    end)
     b.Focused:Connect(function()
-        TweenService:Create(b, TweenInfo.new(0.13), { BackgroundTransparency = 0.05 }):Play()
+        focused = true
+        TweenService:Create(b, TweenInfo.new(0.13), { BackgroundTransparency = 0 }):Play()
         TweenService:Create(edge, TweenInfo.new(0.13),
-            { Transparency = 0.25, Color = THEMES[currentThemeName].accent }):Play()
+            { Transparency = 0, Color = Funk.YELLOW, Thickness = 2 }):Play()
     end)
     b.FocusLost:Connect(function()
-        TweenService:Create(b, TweenInfo.new(0.18), { BackgroundTransparency = 0.25 }):Play()
+        focused = false
+        TweenService:Create(b, TweenInfo.new(0.18), { BackgroundTransparency = 0.15 }):Play()
         TweenService:Create(edge, TweenInfo.new(0.18),
-            { Transparency = 0.88, Color = Color3.fromRGB(255, 255, 255) }):Play()
+            { Transparency = 0.55, Color = Funk.EDGE, Thickness = 1 }):Play()
     end)
+    pcall(Funk.hook, b); pcall(Funk.dressText, b)
     return b
 end
 
@@ -12473,39 +13263,77 @@ function F.hookSliderDrag()
 end
 
 function F.makeSlider(parent, pos, size, minVal, maxVal, default, onChange)
+    -- an arcade meter: ink track with a cyan rim and tick marks, a fill
+    -- that brightens toward the handle, and a diamond handle
     local track = Instance.new("Frame")
     track.Size = size; track.Position = pos
-    track.BackgroundColor3 = Color3.fromRGB(255,255,255)
-    track.BackgroundTransparency = 0.85
+    track.BackgroundColor3 = Funk.INK
+    track.BackgroundTransparency = 0.1
     track.BorderSizePixel = 0; track.Active = true
-    track.Parent = parent; F.uiCorner(track, UDim.new(1,0))
-    F.uiStroke(track, Color3.fromRGB(255,255,255), 1).Transparency = 0.85
+    Funk.done[track] = true
+    track.Parent = parent; F.uiCorner(track, UDim.new(0,2))
+    local rim = Instance.new("UIStroke")
+    rim.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+    rim.Color = Funk.EDGE; rim.Thickness = 1; rim.Transparency = 0.5
+    Funk.mine[rim] = true
+    rim.Parent = track
+    for i = 1, 3 do
+        local tick = Instance.new("Frame")
+        tick.Size = UDim2.new(0, 1, 0.5, 0); tick.AnchorPoint = Vector2.new(0.5, 0.5)
+        tick.Position = UDim2.new(i / 4, 0, 0.5, 0)
+        tick.BackgroundColor3 = Color3.new(1, 1, 1); tick.BackgroundTransparency = 0.8
+        tick.BorderSizePixel = 0
+        Funk.done[tick] = true
+        tick.Parent = track
+    end
 
     local fill = Instance.new("Frame")
     fill.BackgroundColor3 = Color3.fromRGB(255,80,180)
-    fill.BackgroundTransparency = 0.35
+    fill.BackgroundTransparency = 0.1
     fill.BorderSizePixel = 0; fill.Size = UDim2.new(0,0,1,0)
-    fill.Parent = track; F.uiCorner(fill, UDim.new(1,0))
+    Funk.done[fill] = true
+    fill.Parent = track; F.uiCorner(fill, UDim.new(0,2))
     F.regBg(fill)
+    local fillGrad = Instance.new("UIGradient")
+    fillGrad.Color = ColorSequence.new(Color3.fromRGB(140, 130, 190), Color3.fromRGB(255, 255, 255))
+    fillGrad.Parent = fill
 
     local handle = Instance.new("Frame")
-    handle.Size = UDim2.new(0,18,0,18)
+    handle.Size = UDim2.new(0,14,0,14)
     handle.AnchorPoint = Vector2.new(0.5,0.5)
     handle.Position = UDim2.new(0,0,0.5,0)
+    handle.Rotation = 45
     handle.BackgroundColor3 = Color3.fromRGB(255,255,255)
-    handle.BackgroundTransparency = 0.15
+    handle.BackgroundTransparency = 0
     handle.BorderSizePixel = 0; handle.ZIndex = 2
-    handle.Parent = track; F.uiCorner(handle, UDim.new(1,0))
-    local hStroke = F.uiStroke(handle, Color3.fromRGB(255,80,180), 1.5)
-    hStroke.Transparency = 0.2
+    Funk.done[handle] = true
+    handle.Parent = track; F.uiCorner(handle, UDim.new(0,2))
+    local hStroke = Instance.new("UIStroke")
+    hStroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+    hStroke.Color = Color3.fromRGB(255,80,180); hStroke.Thickness = 2; hStroke.Transparency = 0
+    Funk.mine[hStroke] = true
+    hStroke.Parent = handle
     F.regStroke(hStroke)
     local handleDot = Instance.new("Frame")
-    handleDot.Size = UDim2.new(0,6,0,6); handleDot.AnchorPoint = Vector2.new(0.5,0.5)
+    handleDot.Size = UDim2.new(0,4,0,4); handleDot.AnchorPoint = Vector2.new(0.5,0.5)
     handleDot.Position = UDim2.new(0.5,0,0.5,0)
     handleDot.BackgroundColor3 = Color3.fromRGB(255,80,180)
-    handleDot.BackgroundTransparency = 0.2
-    handleDot.BorderSizePixel = 0; handleDot.Parent = handle
-    F.uiCorner(handleDot, UDim.new(1,0)); F.regBg(handleDot)
+    handleDot.BackgroundTransparency = 0
+    handleDot.BorderSizePixel = 0
+    Funk.done[handleDot] = true
+    handleDot.Parent = handle
+    F.regBg(handleDot)
+
+    -- the handle grows under the pointer
+    local big, small = UDim2.new(0,18,0,18), UDim2.new(0,14,0,14)
+    track.MouseEnter:Connect(function()
+        TweenService:Create(handle, TweenInfo.new(0.12, Enum.EasingStyle.Back), { Size = big }):Play()
+        TweenService:Create(rim, TweenInfo.new(0.12), { Transparency = 0.15 }):Play()
+    end)
+    track.MouseLeave:Connect(function()
+        TweenService:Create(handle, TweenInfo.new(0.18), { Size = small }):Play()
+        TweenService:Create(rim, TweenInfo.new(0.18), { Transparency = 0.5 }):Play()
+    end)
 
     local value = default
 
@@ -18360,13 +19188,14 @@ function F.buildTab_Settings(pages)
     local themeTitle = F.makeLabel(pg6, "🎨 THEME", UDim2.new(0,8,0,326), UDim2.new(1,-16,0,20), Color3.fromRGB(255,80,180), Enum.TextXAlignment.Left, 12)
     F.regText(themeTitle)
 
-    local themeNames = { "Pink", "Cyan", "Purple", "RGB", "Mono" }
-    local themeSwatch = { Pink = Color3.fromRGB(255,80,180), Cyan = Color3.fromRGB(0,200,255),
+    local themeNames = { "Funkin", "Pink", "Cyan", "Purple", "RGB", "Mono" }
+    local themeSwatch = { Funkin = Color3.fromRGB(255,218,64),
+                           Pink = Color3.fromRGB(255,80,180), Cyan = Color3.fromRGB(0,200,255),
                            Purple = Color3.fromRGB(165,85,255), RGB = Color3.fromRGB(255,255,255),
                            Mono = Color3.fromRGB(235,235,240) }
     for i, tn in ipairs(themeNames) do
-        local tx = 8 + (i-1) * 82
-        local tbtn = F.makeBtn(pg6, tn, UDim2.new(0, tx, 0, 356), UDim2.new(0, 76, 0, 32), themeSwatch[tn], Color3.fromRGB(20,20,20), 10)
+        local tx = 8 + (i-1) * 70
+        local tbtn = F.makeBtn(pg6, string.upper(tn), UDim2.new(0, tx, 0, 356), UDim2.new(0, 64, 0, 32), themeSwatch[tn], Color3.fromRGB(20,20,20), 10)
         tbtn.MouseButton1Click:Connect(function() F.setTheme(tn) end)
     end
 
@@ -18825,29 +19654,16 @@ function F.buildGUI()
     local main = Instance.new("Frame")
     main.Name = "Main"; main.Size = UDim2.new(0,MAIN_W,0,MAIN_H)
     main.Position = UDim2.new(0,60,0,60)
-    main.BackgroundColor3 = Color3.fromRGB(13, 12, 19)
-    main.BackgroundTransparency = 0.04
+    main.BackgroundTransparency = 0.02
     main.BorderSizePixel = 0; main.Active = true; main.Draggable = true
     main.ClipsDescendants = true
-    main.Parent = sg; F.uiCorner(main, UDim.new(0,18))
-    local mainStroke = F.uiStroke(main, Color3.fromRGB(255,255,255), 1)
-    mainStroke.Transparency = 0.85
-    local mainAccentStroke = Instance.new("UIStroke")
-    mainAccentStroke.Color = Color3.fromRGB(255,80,180)
-    mainAccentStroke.Thickness = 1; mainAccentStroke.Transparency = 0.7
-    mainAccentStroke.Parent = main
-    F.regStroke(mainAccentStroke)
-    local mainGrad = Instance.new("UIGradient")
-    mainGrad.Color = ColorSequence.new({
-        ColorSequenceKeypoint.new(0,   Color3.fromRGB(26, 22, 38)),
-        ColorSequenceKeypoint.new(0.5, Color3.fromRGB(13, 12, 19)),
-        ColorSequenceKeypoint.new(1,   Color3.fromRGB(10, 9, 15)),
-    })
-    mainGrad.Rotation = 115; mainGrad.Parent = main
+    main.Parent = sg; F.uiCorner(main, UDim.new(0,6))
+    -- rim in every colour, indigo body, halftone, stripes, graffiti (FUNKIN' SKIN)
+    local pattern = Funk.dressMain(main)
 
     notesLayer = Instance.new("Frame")
     notesLayer.Size = UDim2.new(1,0,1,0); notesLayer.BackgroundTransparency = 1
-    notesLayer.ClipsDescendants = true; notesLayer.ZIndex = F.silZ(0); notesLayer.Parent = main
+    notesLayer.ClipsDescendants = true; notesLayer.ZIndex = F.silZ(1); notesLayer.Parent = main
 
     crtOverlay = Instance.new("Frame")
     crtOverlay.Size = UDim2.new(1,0,1,0); crtOverlay.BackgroundColor3 = Color3.fromRGB(20,255,120)
@@ -18855,7 +19671,7 @@ function F.buildGUI()
     crtOverlay.BorderSizePixel = 0; crtOverlay.ZIndex = F.silZ(50)
     crtOverlay.Visible = false
     crtOverlay.Parent = main
-    local crtOverlayCorner = Instance.new("UICorner"); crtOverlayCorner.CornerRadius = UDim.new(0,10); crtOverlayCorner.Parent = crtOverlay
+    local crtOverlayCorner = Instance.new("UICorner"); crtOverlayCorner.CornerRadius = UDim.new(0,6); crtOverlayCorner.Parent = crtOverlay
 
     local scanlineHolder = Instance.new("Frame")
     scanlineHolder.Size = UDim2.new(1,0,1,0); scanlineHolder.BackgroundTransparency = 1
@@ -18873,41 +19689,13 @@ function F.buildGUI()
         line.Parent = scanlineHolder
     end
 
+    -- the menu's yellow bar: stripes, shine, note-colour logo, the title
+    -- bumping to the beat and a version sticker
     local titleBar = Instance.new("Frame")
     titleBar.Size = UDim2.new(1,0,0,40)
-    titleBar.BackgroundColor3 = Color3.fromRGB(19, 17, 27)
-    titleBar.BackgroundTransparency = 0.15
-    titleBar.BorderSizePixel = 0; titleBar.Parent = main; F.uiCorner(titleBar, UDim.new(0,18))
-
-    -- accent dot, left of the title
-    local tbDot = Instance.new("Frame")
-    tbDot.Size = UDim2.new(0, 8, 0, 8); tbDot.Position = UDim2.new(0, 14, 0.5, -4)
-    tbDot.BackgroundColor3 = Color3.fromRGB(255, 80, 180)
-    tbDot.BorderSizePixel = 0; tbDot.Parent = titleBar
-    F.uiCorner(tbDot, UDim.new(1, 0)); F.regBg(tbDot)
-    -- accent hairline under the header
-    local tbSep = Instance.new("Frame")
-    tbSep.Size = UDim2.new(1,0,0,1); tbSep.Position = UDim2.new(0,0,1,-1)
-    tbSep.BackgroundColor3 = Color3.fromRGB(255,80,180)
-    tbSep.BackgroundTransparency = 0.55
-    tbSep.BorderSizePixel = 0; tbSep.Parent = titleBar
-    F.regBg(tbSep)
-
-    local titleLbl = F.makeLabel(titleBar, "FNF ANIM INJECTOR",
-        UDim2.new(0,30,0,0), UDim2.new(0,190,1,0),
-        Color3.fromRGB(242,242,250), Enum.TextXAlignment.Left, 13)
-    titleLbl.Font = Enum.Font.GothamBold
-
-    -- version chip
-    local verChip = Instance.new("Frame")
-    verChip.Size = UDim2.new(0, 38, 0, 18); verChip.Position = UDim2.new(0, 196, 0.5, -9)
-    verChip.BackgroundColor3 = Color3.fromRGB(255, 80, 180)
-    verChip.BackgroundTransparency = 0.78
-    verChip.BorderSizePixel = 0; verChip.Parent = titleBar
-    F.uiCorner(verChip, UDim.new(1, 0)); F.regBg(verChip)
-    local verLbl = F.makeLabel(verChip, "v" .. INJECTOR_VERSION, UDim2.new(0,0,0,0), UDim2.new(1,0,1,0),
-        Color3.fromRGB(255,255,255), Enum.TextXAlignment.Center, 9)
-    verLbl.Font = Enum.Font.GothamBold
+    titleBar.BorderSizePixel = 0; titleBar.ZIndex = 3; titleBar.Parent = main
+    Funk.dressTitle(titleBar)
+    Funk.rule(main, 40)
 
     local toggleBtn = F.makeBtn(titleBar, "HIDE",
         UDim2.new(1,-70,0,8), UDim2.new(0,58,0,24), Color3.fromRGB(34,31,46), nil, 10)
@@ -18933,29 +19721,28 @@ function F.buildGUI()
         end)
     end)
 
-    local TAB_H = 36
+    -- every tab on screen at once: a two-row menu, each tab in a note colour
+    local TAB_H = 59
     local tabBar = Instance.new("Frame")
-    tabBar.Size = UDim2.new(1,-8,0,TAB_H); tabBar.Position = UDim2.new(0,4,0,42)
+    tabBar.Size = UDim2.new(1,-12,0,TAB_H); tabBar.Position = UDim2.new(0,6,0,47)
     tabBar.BackgroundTransparency = 1
-    tabBar.BorderSizePixel = 0; tabBar.Parent = main
-    local tabScroll = Instance.new("ScrollingFrame")
-    tabScroll.Size = UDim2.new(1,0,1,0); tabScroll.BackgroundTransparency = 1
-    tabScroll.ScrollBarThickness = 0; tabScroll.BorderSizePixel = 0
-    tabScroll.CanvasSize = UDim2.new(0,0,1,0); tabScroll.AutomaticCanvasSize = Enum.AutomaticSize.X
-    tabScroll.ScrollingDirection = Enum.ScrollingDirection.X
-    tabScroll.Parent = tabBar
-    local tabLayout = Instance.new("UIListLayout")
-    tabLayout.FillDirection = Enum.FillDirection.Horizontal
-    tabLayout.Padding = UDim.new(0,4); tabLayout.VerticalAlignment = Enum.VerticalAlignment.Center
-    tabLayout.Parent = tabScroll
-    local tabPad = Instance.new("UIPadding")
-    tabPad.PaddingLeft = UDim.new(0,4); tabPad.PaddingRight = UDim.new(0,4)
-    tabPad.Parent = tabScroll
+    tabBar.BorderSizePixel = 0; tabBar.ZIndex = 2; tabBar.Parent = main
+    local tabGrid = Instance.new("UIGridLayout")
+    tabGrid.CellSize = UDim2.new(1/6, -4, 0, 27)
+    tabGrid.CellPadding = UDim2.new(0, 4, 0, 5)
+    tabGrid.SortOrder = Enum.SortOrder.LayoutOrder
+    tabGrid.HorizontalAlignment = Enum.HorizontalAlignment.Center
+    tabGrid.Parent = tabBar
 
+    local TOP = 47 + TAB_H + 6
+    Funk.rule(main, TOP - 3)
     local contentArea = Instance.new("Frame")
-    contentArea.Size = UDim2.new(1,0,1,-(42+TAB_H+4))
-    contentArea.Position = UDim2.new(0,0,0,42+TAB_H+4)
-    contentArea.BackgroundTransparency = 1; contentArea.Parent = main
+    contentArea.Size = UDim2.new(1,0,1,-TOP)
+    contentArea.Position = UDim2.new(0,0,0,TOP)
+    contentArea.BackgroundTransparency = 1; contentArea.ZIndex = 2
+    contentArea.ClipsDescendants = true          -- a page sliding in stays inside
+    contentArea.Parent = main
+    Funk.makeSweep(contentArea)
 
     local tabNames   = { "📋 BINDS", "👯 COPY", "💪 ARMS", "✂ CUTTER", "🎥 CAM", "✈ FLY", "💨 FALL", "🎛 FX", "🏆 RESULT", "✨ SHOW", "⚙ SETTINGS" }
     local pages      = {}
@@ -18964,70 +19751,39 @@ function F.buildGUI()
     for i, name in ipairs(tabNames) do
         local page = Instance.new("ScrollingFrame")
         page.Size = UDim2.new(1,0,1,0); page.BackgroundTransparency = 1
-        page.ScrollBarThickness = 3; page.ScrollBarImageTransparency = 0.5
+        page.BorderSizePixel = 0
+        page.ScrollBarThickness = 4; page.ScrollBarImageTransparency = 0.15
+        page.ScrollBarImageColor3 = Funk.YELLOW
         page.CanvasSize = UDim2.new(0,0,0,0)
         page.AutomaticCanvasSize = Enum.AutomaticSize.Y
+        page.ZIndex = 2
         page.Visible = (i == 1); page.Parent = contentArea
         pages[name] = page
+        Funk.pages[page] = true
 
         local tb = Instance.new("TextButton")
-        tb.Size = UDim2.new(0,0,0,30); tb.AutomaticSize = Enum.AutomaticSize.X
-        tb.BackgroundColor3 = Color3.fromRGB(24, 22, 33)
-        tb.BackgroundTransparency = i == 1 and 0.1 or 0.65
-        tb.Text = name
-        tb.TextColor3 = i == 1 and Color3.fromRGB(255,255,255) or Color3.fromRGB(150,150,170)
-        tb.Font = Enum.Font.GothamBold; tb.TextSize = 9
+        tb.Name = name
+        tb.LayoutOrder = i
+        tb.Text = Funk.tabLabel(name)
         tb.BorderSizePixel = 0; tb.AutoButtonColor = false
-        tb.Parent = tabScroll
-        F.uiCorner(tb, UDim.new(0,7))
-        local tbTextPad = Instance.new("UIPadding")
-        tbTextPad.PaddingLeft = UDim.new(0,11); tbTextPad.PaddingRight = UDim.new(0,11)
-        tbTextPad.Parent = tb
-
-        -- accent underline marks the active tab
-        local tbLine = Instance.new("Frame")
-        tbLine.Name = "ActiveLine"
-        tbLine.Size = UDim2.new(1,-16,0,2); tbLine.Position = UDim2.new(0,8,1,-3)
-        tbLine.BackgroundColor3 = THEMES[currentThemeName].accent
-        tbLine.BackgroundTransparency = i == 1 and 0 or 1
-        tbLine.BorderSizePixel = 0; tbLine.Parent = tb
-        F.uiCorner(tbLine, UDim.new(1,0)); F.regBg(tbLine)
+        tb.Parent = tabBar
+        Funk.dressTab(tb, i)
+        Funk.paintTab(tb, i == 1, true)
 
         tabButtons[name] = tb
-        tb.MouseButton1Click:Connect(function()
-            for n, p in pairs(pages) do p.Visible = (n == name) end
-            for n, btn in pairs(tabButtons) do
-                local isActive = (n == name)
-                TweenService:Create(btn, TweenInfo.new(0.18, Enum.EasingStyle.Quad), {
-                    BackgroundTransparency = isActive and 0.1 or 0.65,
-                    TextColor3 = isActive and Color3.fromRGB(255,255,255) or Color3.fromRGB(150,150,170),
-                }):Play()
-                local line = btn:FindFirstChild("ActiveLine")
-                if line then
-                    TweenService:Create(line, TweenInfo.new(0.18), {
-                        BackgroundTransparency = isActive and 0 or 1
-                    }):Play()
-                end
-            end
-        end)
+        tb.MouseButton1Click:Connect(function() F.selectTab(name) end)
     end
 
     -- lets the tour (and anything else) switch tabs from code
     F.tabButtons = tabButtons
+    local shownTab = tabNames[1]
     F.selectTab = function(name)
         if not pages[name] then return end
+        local changed = (name ~= shownTab)
+        shownTab = name
         for n, p in pairs(pages) do p.Visible = (n == name) end
-        for n, btn in pairs(tabButtons) do
-            local isActive = (n == name)
-            TweenService:Create(btn, TweenInfo.new(0.18, Enum.EasingStyle.Quad), {
-                BackgroundTransparency = isActive and 0.1 or 0.65,
-                TextColor3 = isActive and Color3.fromRGB(255,255,255) or Color3.fromRGB(150,150,170),
-            }):Play()
-            local line = btn:FindFirstChild("ActiveLine")
-            if line then
-                TweenService:Create(line, TweenInfo.new(0.18), { BackgroundTransparency = isActive and 0 or 1 }):Play()
-            end
-        end
+        for n, btn in pairs(tabButtons) do Funk.paintTab(btn, n == name) end
+        if changed then Funk.enterPage(pages[name]) end
     end
 
     -- one tab failing to build mustn't stop the tabs after it from building
@@ -19043,6 +19799,13 @@ function F.buildGUI()
             F.notify("The " .. tab[1] .. " tab hit an error while building — the other tabs still work", "error")
         end
     end
+
+    -- dress everything the tabs just built, and whatever they add later:
+    -- section panels behind each page, the font, the colours (FUNKIN' SKIN)
+    for _, page in pairs(pages) do pcall(Funk.addBack, page, contentArea) end
+    pcall(Funk.skin, main, notesLayer, crtOverlay, pattern)
+    pcall(Funk.applyTheme, currentThemeName)
+    Funk.startLoop()
 
     F.setPanelOpen = function(open)
         if guiVisible ~= open then
