@@ -33,6 +33,26 @@
     longer you hold.
     Sprites are local files made by the scripts in tools/.
 
+    v7.2.9
+      * CUTTER: after a reset it loads properly again. It waits for
+        your new body, loads every note's animation, checks each one
+        really arrived and loads again any that came back empty. A
+        note pressed before its animation is there starts the moment
+        it arrives, instead of sitting on a blank track. The preview
+        waits until your new body is dressed before copying it.
+      * CUTTER: fast tapping. FAST TAPS (on by default, under REACH
+        TIME) makes each slice land sooner when you tap faster than
+        the reach time, so every tap shows its pose. A quick tap
+        that lets go before the pose lands still lands it first.
+        Letting go of an older note while a newer one is down no
+        longer ends the newer one. A slice lands exactly on its stop
+        frame, with no frame past it.
+      * FALL: an afterimage no longer counts as ground, so making
+        one on the way down doesn't end your fall with "you landed".
+        The afterimage stays see-through to the ground check and
+        can't turn solid. FE DASH waits while you FALL (the fall
+        moves you itself).
+
     v7.2.8
       * BINDS: the BEAT SYNC, EQUALIZER and WAVEFORM row is remade as
         three small screens side by side, each in its own colour. The
@@ -294,7 +314,7 @@ local sectionPrevKey     = "LeftBracket"   -- [ to go prev
 -- ============================================================
 local SpacingSystem          -- ★ forward-declared so F.setupCharacter can see it
 local SPACING                -- forward-declared: the save code above its definition needs it
-local INJECTOR_VERSION = "7.2.8"   -- up here so everything can read it
+local INJECTOR_VERSION = "7.2.9"   -- up here so everything can read it
 local animTracks   = {}
 local idleTrack    = nil
 local connections  = {}
@@ -419,6 +439,8 @@ local Ghost = {
     dashDistance = 4,           -- studs
     dashHold     = 0.15,        -- seconds away, long enough for the server to pass it on
     dashGen      = 0,
+    live         = {},          -- [model] = true for every afterimage on screen now
+    liveGen      = 0,           -- bumps when one appears or goes
 }
 
 -- ============================================================
@@ -600,6 +622,13 @@ local Cut = {
     reach    = 0.1,      -- seconds a slice takes to reach its pose when you press
     snap     = false,    -- skip straight to the pose, no motion at all
     sliceGen = 0,        -- bumps on every press so stale watchers bow out
+    quick    = true,     -- FAST TAPS: tap faster than reach and each slice lands sooner
+    lastPress = 0,       -- when the last note was pressed
+    dir      = nil,      -- the note whose slice is playing now
+    upGen    = 0,        -- the press you've let go of
+    landedGen = 0,       -- the press whose slice has reached its pose
+    waitGen  = 0,        -- a press waiting for its animation to arrive
+    warmGen  = 0,        -- bumps on every warm-up so an older one bows out
 
     -- play the slice back to its start frame after it lands
     reverse     = "OFF",   -- OFF / AUTO / RELEASE
@@ -2818,6 +2847,10 @@ function Ghost.spawn(dir)
         elseif d:IsA("TouchTransmitter") or d:IsA("ClickDetector")
             or d:IsA("ProximityPrompt") or d:IsA("Fire") or d:IsA("Smoke") then
             d:Destroy()
+        elseif d:IsA("BodyMover") or d:IsA("LinearVelocity") or d:IsA("AngularVelocity")
+            or d:IsA("AlignPosition") or d:IsA("AlignOrientation") or d:IsA("VectorForce")
+            or d:IsA("Torque") or d:IsA("LineForce") then
+            d:Destroy()      -- FALL's or FLY's push came along in the copy
         end
     end
     -- strip the humanoid so it can't walk, collide or be targeted
@@ -2836,6 +2869,16 @@ function Ghost.spawn(dir)
 
     clone.Name = "FNFAfterimage"
     clone.Parent = Workspace
+    -- FALL and the dash look for solid ground: an afterimage under your
+    -- feet must never count as ground
+    Ghost.live[clone] = true
+    Ghost.liveGen = Ghost.liveGen + 1
+    -- a Humanoid can switch its body back to solid by itself; keep it off
+    local keepOff = F.own(RunService.Stepped:Connect(function()
+        for _, p in ipairs(parts) do
+            if p.CanCollide then p.CanCollide = false end
+        end
+    end))
 
     -- travel direction, relative to how the character is facing
     local cf = root.CFrame
@@ -2864,8 +2907,14 @@ function Ghost.spawn(dir)
             local a = (os.clock() - t0) / life
             local eased = 1 - (1 - a) * (1 - a)
             pcall(function() clone:PivotTo(startCF + offset * eased) end)
+            for _, p in ipairs(parts) do
+                if p.CanCollide then p.CanCollide = false end
+            end
             RunService.Heartbeat:Wait()
         end
+        pcall(function() keepOff:Disconnect() end)
+        Ghost.live[clone] = nil
+        Ghost.liveGen = Ghost.liveGen + 1
         pcall(function() clone:Destroy() end)
     end)
 end
@@ -2877,7 +2926,9 @@ end
 -- pass it on, and brings you back. It moves you by deltas, so you can keep
 -- walking through it and you end up exactly where you'd otherwise be.
 function Ghost.dash(dir)
-    if not Ghost.feDash or Ride.enabled then return end
+    -- FALL moves you itself; a dash on top would fight it (and could put
+    -- you nearer the ground than it planned for)
+    if not Ghost.feDash or Ride.enabled or Fall.on then return end
     local char = character
     local root = char and char:FindFirstChild("HumanoidRootPart")
     local hum = char and char:FindFirstChildOfClass("Humanoid")
@@ -2895,7 +2946,9 @@ function Ghost.dash(dir)
     -- stop short of walls, so you never end up inside one
     local params = RaycastParams.new()
     params.FilterType = Enum.RaycastFilterType.Exclude
-    params.FilterDescendantsInstances = { char }
+    local skip = { char }
+    for m in pairs(Ghost.live) do table.insert(skip, m) end
+    params.FilterDescendantsInstances = skip
     local dist = Ghost.dashDistance
     local hit = Workspace:Raycast(root.Position, way * (dist + 2), params)
     if hit then dist = math.max(0, (hit.Position - root.Position).Magnitude - 2) end
@@ -3384,7 +3437,7 @@ function Save.collect()
 
         cutterResponse = { reach = Cut.reach, snap = Cut.snap, reverse = Cut.reverse,
                            returnPause = Cut.returnPause, returnTime = Cut.returnTime,
-                           holdAfterReturn = Cut.holdAfterReturn },
+                           holdAfterReturn = Cut.holdAfterReturn, quick = Cut.quick },
         cutter = { id = cutterAnimId, slices = {
             LEFT = cutterSlices.LEFT, DOWN = cutterSlices.DOWN,
             UP = cutterSlices.UP, RIGHT = cutterSlices.RIGHT } },
@@ -3678,6 +3731,7 @@ function Save.apply(d, silentUi)
             if type(d.cutterResponse.holdAfterReturn) == "boolean" then
                 Cut.holdAfterReturn = d.cutterResponse.holdAfterReturn
             end
+            if type(d.cutterResponse.quick) == "boolean" then Cut.quick = d.cutterResponse.quick end
         end
         if type(d.cutter) == "table" then
             -- an empty saved id keeps the default instead of wiping it
@@ -6117,17 +6171,35 @@ end
 -- the ground and walls: never you, or who you sync with
 function Fall.rayParams()
     local now = os.clock()
-    if Fall.rp and now - Fall.rpT < 0.5 then return Fall.rp end
+    if Fall.rp and now - Fall.rpT < 0.5 and Fall.rpGhosts == Ghost.liveGen then return Fall.rp end
     local p = RaycastParams.new()
     p.FilterType = Enum.RaycastFilterType.Exclude
     local list = {}
     if character then table.insert(list, character) end
     local sc = Fall.syncPlr and Fall.syncPlr.Character
     if sc then table.insert(list, sc) end
+    -- our own on-screen copies of you are never ground
+    for m in pairs(Ghost.live) do
+        if m.Parent then table.insert(list, m) end
+    end
+    if Ride.viewModel and Ride.viewModel.Parent then table.insert(list, Ride.viewModel) end
     p.FilterDescendantsInstances = list
     pcall(function() p.RespectCanCollide = true end)
-    Fall.rp, Fall.rpT = p, now
+    Fall.rp, Fall.rpT, Fall.rpGhosts = p, now, Ghost.liveGen
     return p
+end
+
+-- what this script puts in the world for you to look at: none of it is ground
+Fall.NOT_GROUND = { FNFAfterimage = true, FNFRideView = true, FNFWorldStage = true,
+    FNFFallWind = true, FNFAirFlash = true, PreviewClone = true, CutterClone = true }
+
+function Fall.notGround(inst)
+    local x = inst
+    while x and x ~= Workspace do
+        if Fall.NOT_GROUND[x.Name] then return x end
+        x = x.Parent
+    end
+    return nil
 end
 
 -- studs from your root's middle down to your feet when you stand
@@ -6139,7 +6211,18 @@ end
 -- how far your feet are above the ground right under you; nil when
 -- there's no ground within 3000 studs
 function Fall.floorGap(pos)
-    local hit = Workspace:Raycast(pos, Vector3.new(0, -3000, 0), Fall.rayParams())
+    local params = Fall.rayParams()
+    local hit
+    for _ = 1, 4 do
+        hit = Workspace:Raycast(pos, Vector3.new(0, -3000, 0), params)
+        local mine = hit and Fall.notGround(hit.Instance)
+        if not mine then break end
+        -- one of ours got in the way: look past it
+        local l = params.FilterDescendantsInstances
+        table.insert(l, mine)
+        params.FilterDescendantsInstances = l
+        hit = nil
+    end
     if not hit then return nil end
     return pos.Y - hit.Position.Y - (Fall.stand or 3)
 end
@@ -8160,7 +8243,7 @@ end
 function F.noteRelease(row, copied)
     Chars.release(row.dir)
     if cutterEnabled then
-        F.cutterStopSlice()
+        F.cutterStopSlice(row.dir)
     else
         F.stopAnim(row.key)
     end
@@ -10760,7 +10843,14 @@ end
 -- One gameplay track per animation, cached, so jumping between notes that
 -- use different animations never reloads anything mid-song.
 function F.cutterTrackFor(id)
-    if not animator or not id or id == "" then return nil end
+    if not id or id == "" then return nil end
+    -- the Animator we hold was thrown away while your body stayed (the game
+    -- swapped it): pick up the one your character has now
+    if animator and not animator.Parent and character and character.Parent then
+        local a = F.getAnimator(character)
+        if a then animator = a; pcall(Hold.watch, a) end
+    end
+    if not animator then return nil end
 
     -- Resetting destroys the old Animator. Tracks loaded on it still exist as
     -- objects and accept Play() without error, they just never animate. So
@@ -10785,10 +10875,66 @@ function F.cutterTrackFor(id)
     return nil
 end
 
+-- A track made before your new body was ready can stay empty for good.
+-- Throw it away and make it again.
+function F.cutterRemake(id)
+    local old = Cut.tracks[id]
+    if old then
+        pcall(function() old:Stop(0) end)
+        pcall(function() old:Destroy() end)
+    end
+    Cut.tracks[id] = nil
+    if cutterTrack == old then cutterTrack = nil end
+    return F.cutterTrackFor(id)
+end
+
 function F.cutterLoadTrack()
     for _, dir in ipairs(ARROW_ORDER) do F.cutterTrackFor(F.cutterSliceId(dir)) end
     cutterTrack = F.cutterTrackFor(cutterAnimId) or cutterTrack
     return cutterTrack
+end
+
+-- After a reset your new body takes a moment to arrive and dress, and a
+-- track loaded before that can come back empty. So: wait for the body, load
+-- every note's animation, wait until each one has really arrived, and make
+-- again any that didn't. A newer call (another reset) takes over.
+function F.cutterWarm()
+    Cut.warmGen = Cut.warmGen + 1
+    local my = Cut.warmGen
+    task.spawn(function()
+        local t0 = os.clock()
+        while Cut.warmGen == my and os.clock() - t0 < 6 do
+            local c, a = character, animator
+            if c and a and c:IsDescendantOf(Workspace) and a:IsDescendantOf(c) then break end
+            task.wait(0.1)
+        end
+        if Cut.warmGen ~= my or not animator then return end
+        pcall(F.cutterLoadTrack)
+        local list = {}
+        for _, tr in pairs(Cut.tracks) do
+            if tr.Animation then table.insert(list, tr.Animation) end
+        end
+        task.spawn(function()
+            pcall(function() game:GetService("ContentProvider"):PreloadAsync(list) end)
+        end)
+        for round = 1, 2 do
+            local deadline = os.clock() + 2.5
+            local empty
+            repeat
+                task.wait(0.1)
+                if Cut.warmGen ~= my then return end
+                empty = {}
+                for id, tr in pairs(Cut.tracks) do
+                    if tr.Length <= 0 then table.insert(empty, id) end
+                end
+            until #empty == 0 or os.clock() > deadline
+            if #empty == 0 or round == 2 then break end
+            for _, id in ipairs(empty) do
+                local tr = Cut.tracks[id]
+                if tr and not tr.IsPlaying then pcall(F.cutterRemake, id) end
+            end
+        end
+    end)
 end
 
 -- Walk the slice back to its first frame, then hold it there.
@@ -10824,6 +10970,75 @@ function F.cutterReverse(track, gen)
     end)
 end
 
+-- The slice reached its pose. What comes next depends on PLAY IT BACK, and
+-- on whether you already let go: a quick tap lets go before it gets there.
+function F.cutterLanded(track, gen)
+    Cut.landedGen = gen
+    if Cut.reverse == "AUTO" then
+        task.delay(Cut.returnPause, function()
+            if gen == Cut.sliceGen then F.cutterReverse(track, gen) end
+        end)
+        return
+    end
+    if Cut.upGen ~= gen then return end            -- key still down: stay on the pose
+    if Cut.reverse == "RELEASE" then
+        F.cutterReverse(track, gen)                -- let go on the way there: go back now
+        return
+    end
+    if Hold.enabled and Hold.cutter then
+        if Hold.track ~= track then Hold.start(track, "slice") end
+        return
+    end
+    -- let go on the way there: show the pose for a beat, then let it go
+    task.delay(0.05, function()
+        if gen == Cut.sliceGen and track.IsPlaying then track:Stop(BLEND_OUT) end
+    end)
+end
+
+-- Run one press's slice: from its start frame to its stop frame in `reach`
+-- seconds, then F.cutterLanded.
+function F.cutterRun(track, slice, gen, reach)
+    local a, b = slice.start, slice.stop
+    if b < a then a, b = b, a end
+    a, b = math.max(0, a), math.max(0, b)
+    local span = b - a
+    Cut.sliceStart = a
+
+    -- already playing: don't call Play again, which restarts and hitches.
+    -- Just move the playhead.
+    if not track.IsPlaying then track:Play(0) end
+    track.TimePosition = a
+
+    if Cut.snap or span <= 0.001 then
+        -- instant: land on the pose this frame
+        track:AdjustSpeed(0)
+        track.TimePosition = b
+        F.cutterLanded(track, gen)
+        return
+    end
+
+    -- speed the slice up so it always lands in `reach` seconds, whatever
+    -- its real length, exactly like normal binds do
+    local speed = span / math.max(reach, 0.01)
+    track:AdjustSpeed(speed)
+    task.spawn(function()
+        local dt = 1 / 60
+        while gen == Cut.sliceGen and track.IsPlaying do
+            local tp = track.TimePosition
+            -- it gets there this frame (or already went past, or the looped
+            -- track wrapped back past the start): put it exactly on the stop
+            -- frame now, so you never see a frame beyond the pose
+            if tp + speed * dt >= b - 0.001 or tp < a - 0.002 then
+                track:AdjustSpeed(0)
+                track.TimePosition = b
+                F.cutterLanded(track, gen)
+                return
+            end
+            dt = math.clamp(RunService.RenderStepped:Wait(), 1 / 240, 1 / 20)
+        end
+    end)
+end
+
 function F.cutterPlaySlice(dir)
     if not animator then return end
     local slice = cutterSlices[dir]
@@ -10833,6 +11048,11 @@ function F.cutterPlaySlice(dir)
     if not id or id == "" then return end
     local tr = F.cutterTrackFor(id)
     if not tr then return end
+
+    -- how fast you're tapping: the time since the last press
+    local now = os.clock()
+    local gap = now - Cut.lastPress
+    Cut.lastPress = now
 
     -- moving to a slice from a DIFFERENT animation: retire the old track fast
     if cutterTrack and cutterTrack ~= tr and cutterTrack.IsPlaying then
@@ -10844,66 +11064,61 @@ function F.cutterPlaySlice(dir)
         if Hold.track == tr then Hold.detach() else Hold.clear(false) end
     end
     cutterTrack = tr
+    Cut.dir = dir
 
     -- every press gets its own generation; any watcher from an earlier press
     -- sees the number change and quits, so it can't freeze THIS slice
     Cut.sliceGen = Cut.sliceGen + 1
     local gen = Cut.sliceGen
 
-    local a, b = slice.start, slice.stop
-    if b < a then a, b = b, a end
-    local span = b - a
-    Cut.sliceStart = math.max(0, a)
+    -- FAST TAPS: tapping quicker than the reach time would cut each slice
+    -- off before it lands, so each one lands inside half the gap instead
+    local reach = Cut.reach
+    if Cut.quick and gap < 0.5 then
+        reach = math.min(reach, math.max(0.025, gap * 0.45))
+    end
 
-    -- already playing: don't call Play again, which restarts and hitches.
-    -- Just move the playhead.
-    if not cutterTrack.IsPlaying then cutterTrack:Play(0) end
-    cutterTrack.TimePosition = math.max(0, a)
-
-    if Cut.snap or span <= 0.001 then
-        -- instant: land on the pose this frame
-        cutterTrack:AdjustSpeed(0)
-        cutterTrack.TimePosition = math.max(0, b)
-        if Cut.reverse == "AUTO" then
-            local track = cutterTrack
-            task.delay(Cut.returnPause, function()
-                if gen == Cut.sliceGen then F.cutterReverse(track, gen) end
-            end)
-        end
+    if tr.Length > 0 then
+        F.cutterRun(tr, slice, gen, reach)
         return
     end
 
-    -- speed the slice up so it always lands in `reach` seconds, whatever
-    -- its real length, exactly like normal binds do
-    cutterTrack:AdjustSpeed(span / math.max(Cut.reach, 0.01))
-
-    local track = cutterTrack
+    -- not arrived yet (just after a reset, or a brand-new ID): start the
+    -- moment it does, instead of playing an empty track that never moves
+    Cut.waitGen = gen
     task.spawn(function()
-        while gen == Cut.sliceGen and track and track.IsPlaying do
-            local tp = track.TimePosition
-            -- passed the stop, or the looped track wrapped back past the start
-            if tp >= b or tp < a - 0.002 then
-                track:AdjustSpeed(0)
-                track.TimePosition = b
-                break
+        local t0, remade = os.clock(), false
+        while gen == Cut.sliceGen and tr.Length <= 0 and os.clock() - t0 < 3 do
+            if not remade and os.clock() - t0 > 1.2 and not tr.IsPlaying then
+                remade = true
+                local fresh = F.cutterRemake(id)
+                if fresh then tr = fresh; cutterTrack = fresh end
             end
             RunService.RenderStepped:Wait()
         end
-        -- AUTO: it landed, now take it home
-        if Cut.reverse == "AUTO" and gen == Cut.sliceGen and track.IsPlaying then
-            task.wait(Cut.returnPause)
-            if gen == Cut.sliceGen then F.cutterReverse(track, gen) end
-        end
+        if Cut.waitGen == gen then Cut.waitGen = 0 end
+        if gen ~= Cut.sliceGen or tr.Length <= 0 then return end
+        cutterTrack = tr
+        F.cutterRun(tr, slice, gen, reach)
     end)
 end
 
-function F.cutterStopSlice()
+-- Let go. dir is the note you let go of: letting go of an older note while
+-- a newer one is still down (rolling fast taps) must not end the newer one.
+function F.cutterStopSlice(dir)
+    if dir and Cut.dir and dir ~= Cut.dir then return end
+    Cut.upGen = Cut.sliceGen
+    -- still arriving: it plays when it's ready and lets go after it lands
+    if Cut.waitGen ~= 0 and Cut.waitGen == Cut.sliceGen then return end
     if cutterTrack and cutterTrack.IsPlaying then
         -- AUTO is already on its way home; letting go changes nothing
         if Cut.reverse == "AUTO" then return end
+        local landed = (Cut.landedGen == Cut.sliceGen)
         -- RELEASE: going back is what letting go means
         if Cut.reverse == "RELEASE" then
-            Cut.sliceGen = Cut.sliceGen + 1       -- stop the forward watcher
+            if not landed then return end           -- quick tap: it lands, then goes back
+            Cut.sliceGen = Cut.sliceGen + 1         -- nothing from this press carries on
+            Cut.upGen = Cut.sliceGen
             F.cutterReverse(cutterTrack, Cut.sliceGen)
             return
         end
@@ -10915,6 +11130,7 @@ function F.cutterStopSlice()
             Hold.start(cutterTrack, "slice")
             return
         end
+        if not landed then return end               -- quick tap: it lands, shows, then stops
         cutterTrack:Stop(BLEND_OUT)
     end
 end
@@ -12381,11 +12597,24 @@ function F.setupCharacter(char)
     Cut.tracks = {}
     Cut.trackOwner = nil
     cutterTrack = nil
-    pcall(F.cutterLoadTrack)          -- warm every note's animation again
-    if Cut.wm then task.delay(1, function()
-        Cut.buildClone()
-        Cut.editDir(Cut.selDir, true)
-    end) end
+    Cut.sliceGen = Cut.sliceGen + 1   -- nothing from the old body carries on
+    Cut.landedGen, Cut.waitGen, Cut.dir = 0, 0, nil
+    pcall(F.cutterLoadTrack)          -- warm every note's animation again...
+    F.cutterWarm()                    -- ...and make sure each one really arrives
+    if Cut.wm then
+        -- the preview copies your new body once it's in the world and dressed
+        task.spawn(function()
+            local t0 = os.clock()
+            while character == char and os.clock() - t0 < 6 do
+                local ok, dressed = pcall(function() return LocalPlayer:HasAppearanceLoaded() end)
+                if char:IsDescendantOf(Workspace) and os.clock() - t0 > 0.5 and (dressed or not ok) then break end
+                task.wait(0.1)
+            end
+            if character ~= char or not Cut.wm then return end
+            Cut.buildClone()
+            Cut.editDir(Cut.selDir, true)
+        end)
+    end
     Health.reset()
     Idle.resume()                     -- a looping idle comes back after you respawn
     Copy.links = {}                   -- the old copies went with the old character
@@ -15545,7 +15774,7 @@ function F.buildTab_Cutter(pages)
         cutterEnabled = not cutterEnabled
         enBtn.Text = cutterEnabled and "CUTTER ON" or "CUTTER OFF"
         enBtn.BackgroundColor3 = cutterEnabled and THEMES[currentThemeName].accent or C(35,35,55)
-        if cutterEnabled then F.cutterLoadTrack() else F.cutterStopSlice() end
+        if cutterEnabled then F.cutterLoadTrack(); F.cutterWarm() else F.cutterStopSlice() end
         F.notify(cutterEnabled and "Cutter on — notes play your slices" or "Cutter off — normal binds", "info")
     end)
 
@@ -15916,8 +16145,20 @@ function F.buildTab_Cutter(pages)
         reachLbl.Text = string.format("%.2fs", v)
     end)
 
+    local qtBtn = F.makeBtn(pg, Cut.quick and "FAST TAPS: ON" or "FAST TAPS: OFF",
+        UDim2.new(0,8,0,rY+120), UDim2.new(0,126,0,26),
+        Cut.quick and C(255,160,40) or C(35,35,55), nil, 9)
+    qtBtn.MouseButton1Click:Connect(function()
+        Cut.quick = not Cut.quick
+        qtBtn.Text = Cut.quick and "FAST TAPS: ON" or "FAST TAPS: OFF"
+        qtBtn.BackgroundColor3 = Cut.quick and C(255,160,40) or C(35,35,55)
+    end)
+    local qtNote = F.makeLabel(pg, "Tap faster than the reach time and each slice lands sooner, so every tap shows its pose.",
+        UDim2.new(0,142,0,rY+120), UDim2.new(1,-150,0,26), C(120,120,140), Enum.TextXAlignment.Left, 9)
+    qtNote.TextWrapped = true
+
     -- ── reverse ──
-    local rvY = rY + 124
+    local rvY = rY + 158
     F.makeLabel(pg, "PLAY IT BACK", UDim2.new(0,8,0,rvY), UDim2.new(0,200,0,18),
         C(160,160,160), Enum.TextXAlignment.Left, 10)
     local rvHelp = {
@@ -16017,6 +16258,7 @@ function Cut.applySlot(s, defBox)
     if defBox then defBox.Text = cutterAnimId end
     if Cut.refreshIdBoxes then Cut.refreshIdBoxes() end
     pcall(F.cutterLoadTrack)
+    F.cutterWarm()
     pcall(function() Cut.editDir(Cut.selDir or "LEFT", true) end)
     Cut.drawSlices()
     F.notify("Loaded cutter slot: " .. (s.name ~= "" and s.name or "?"), "success")
